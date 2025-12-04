@@ -535,8 +535,13 @@
                         setTimeout(function() {
                             progress.style.display = 'none';
                             generateBtn.disabled = false;
-                            // Init first driver map
-                            setTimeout(function() { initSingleDriverMap(0); }, 200);
+                            // Init first driver map - wait for DOM to fully stabilize
+                            setTimeout(function() {
+                                var firstCard = document.querySelector('.driver-card .driver-content.open');
+                                if (firstCard) {
+                                    initSingleDriverMap(0);
+                                }
+                            }, 500);
                         }, 300);
                     }, 50);
                 }, 50);
@@ -652,101 +657,184 @@
         function renderResults() {
             results.style.display = 'block';
             driverResults.innerHTML = '';
-            
+
             var totalAddresses = 0;
             var totalMiles = 0;
-            
+
+            // Calculate totals first
             for (var i = 0; i < clusters.length; i++) {
-                var cluster = clusters[i];
-                var driver = drivers[i];
-                totalAddresses += cluster.length;
-                totalMiles += cluster.totalMiles || 0;
-                
-                var card = document.createElement('div');
-                card.className = 'driver-card';
-                
-                var milesStr = (cluster.totalMiles || 0).toFixed(1);
-                
-                var headerHtml = '<div class="driver-header" data-index="' + i + '">';
-                headerHtml += '<h3>' + escapeHtml(driver.name);
-                headerHtml += ' <span class="badge count">' + cluster.length + ' stops</span>';
-                headerHtml += ' <span class="badge miles">' + milesStr + ' mi</span>';
-                headerHtml += '</h3>';
-                headerHtml += '<div class="driver-actions">';
-                headerHtml += '<button class="btn btn-secondary btn-small" data-action="html" data-index="' + i + '">📄 HTML</button>';
-                headerHtml += '<button class="btn btn-secondary btn-small" data-action="copy" data-index="' + i + '">📋 Copy</button>';
-                headerHtml += '</div></div>';
-                
-                var contentHtml = '<div class="driver-content" id="driver-content-' + i + '">';
-                contentHtml += '<div class="driver-map" id="driver-map-' + i + '"></div>';
-                contentHtml += '<div class="address-list">';
-                
-                for (var j = 0; j < cluster.length; j++) {
-                    var addr = cluster[j];
-                    contentHtml += '<div class="address-item">';
-                    contentHtml += '<span class="num">' + (j + 1) + '.</span>';
-                    contentHtml += '<span class="address">' + escapeHtml(addr.fullAddress) + '</span>';
-                    contentHtml += '<a href="' + getMapsLink(addr) + '" target="_blank">Maps ↗</a>';
-                    contentHtml += '</div>';
-                }
-                
-                // Add dropoff as final stop
-                contentHtml += '<div class="address-item dropoff">';
-                contentHtml += '<span class="num">END</span>';
-                contentHtml += '<span class="address">🏁 ' + escapeHtml(dropoff.address) + ' (Drop-off)</span>';
-                contentHtml += '<a href="' + getMapsLink(dropoff) + '" target="_blank">Maps ↗</a>';
-                contentHtml += '</div>';
-                
-                contentHtml += '</div></div>';
-                
-                card.innerHTML = headerHtml + contentHtml;
-                driverResults.appendChild(card);
+                totalAddresses += clusters[i].length;
+                totalMiles += clusters[i].totalMiles || 0;
             }
-            
-            // Event listeners
-            var headers = driverResults.querySelectorAll('.driver-header');
-            for (var h = 0; h < headers.length; h++) {
-                headers[h].addEventListener('click', function(e) {
-                    if (e.target.tagName === 'BUTTON') return;
-                    var idx = parseInt(this.getAttribute('data-index'));
-                    var content = document.getElementById('driver-content-' + idx);
-                    var wasOpen = content.classList.contains('open');
-                    content.classList.toggle('open');
-                    if (!wasOpen && !driverMaps[idx]) {
-                        setTimeout(function() { initSingleDriverMap(idx); }, 100);
-                    }
-                });
-            }
-            
-            var buttons = driverResults.querySelectorAll('button[data-action]');
-            for (var b = 0; b < buttons.length; b++) {
-                buttons[b].addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    var action = this.getAttribute('data-action');
-                    var idx = parseInt(this.getAttribute('data-index'));
-                    if (action === 'html') downloadDriverHtml(idx);
-                    if (action === 'copy') copyDriver(idx);
-                });
-            }
-            
+
+            // Display summary stats immediately
             var avgMiles = drivers.length > 0 ? (totalMiles / drivers.length).toFixed(1) : '0';
             totalStats.innerHTML = '';
             totalStats.innerHTML += '<div class="total-stat"><div class="value">' + totalAddresses.toLocaleString() + '</div><div class="label">Total Addresses</div></div>';
             totalStats.innerHTML += '<div class="total-stat"><div class="value">' + drivers.length + '</div><div class="label">Drivers</div></div>';
             totalStats.innerHTML += '<div class="total-stat"><div class="value">' + totalMiles.toFixed(1) + '</div><div class="label">Total Miles</div></div>';
             totalStats.innerHTML += '<div class="total-stat"><div class="value">' + avgMiles + '</div><div class="label">Avg Miles/Driver</div></div>';
-            
-            // Open first driver
-            var firstContent = document.getElementById('driver-content-0');
-            if (firstContent) firstContent.classList.add('open');
+
+            // Batch render driver cards to prevent DOM thrashing
+            var batchSize = 3;
+            var currentIndex = 0;
+
+            function renderBatch() {
+                var endIndex = Math.min(currentIndex + batchSize, clusters.length);
+                var fragment = document.createDocumentFragment();
+
+                for (var i = currentIndex; i < endIndex; i++) {
+                    var cluster = clusters[i];
+                    var driver = drivers[i];
+
+                    var card = document.createElement('div');
+                    card.className = 'driver-card';
+
+                    var milesStr = (cluster.totalMiles || 0).toFixed(1);
+
+                    var headerHtml = '<div class="driver-header" data-index="' + i + '">';
+                    headerHtml += '<h3>' + escapeHtml(driver.name);
+                    headerHtml += ' <span class="badge count">' + cluster.length + ' stops</span>';
+                    headerHtml += ' <span class="badge miles">' + milesStr + ' mi</span>';
+                    headerHtml += '</h3>';
+                    headerHtml += '<div class="driver-actions">';
+                    headerHtml += '<button class="btn btn-secondary btn-small" data-action="html" data-index="' + i + '">📄 HTML</button>';
+                    headerHtml += '<button class="btn btn-secondary btn-small" data-action="copy" data-index="' + i + '">📋 Copy</button>';
+                    headerHtml += '</div></div>';
+
+                    // Defer address list rendering - only render first 20 initially, rest on demand
+                    var contentHtml = '<div class="driver-content" id="driver-content-' + i + '">';
+                    contentHtml += '<div class="driver-map" id="driver-map-' + i + '"></div>';
+                    contentHtml += '<div class="address-list" id="address-list-' + i + '">';
+
+                    var maxInitialRender = 20;
+                    var renderCount = Math.min(cluster.length, maxInitialRender);
+
+                    for (var j = 0; j < renderCount; j++) {
+                        var addr = cluster[j];
+                        contentHtml += '<div class="address-item">';
+                        contentHtml += '<span class="num">' + (j + 1) + '.</span>';
+                        contentHtml += '<span class="address">' + escapeHtml(addr.fullAddress) + '</span>';
+                        contentHtml += '<a href="' + getMapsLink(addr) + '" target="_blank">Maps ↗</a>';
+                        contentHtml += '</div>';
+                    }
+
+                    // Add "load more" placeholder if there are more addresses
+                    if (cluster.length > maxInitialRender) {
+                        contentHtml += '<div class="address-item load-more" data-driver="' + i + '" style="cursor:pointer;background:#fff8f0;justify-content:center;">';
+                        contentHtml += '<span style="color:#E87C1E;font-weight:600;">▼ Show ' + (cluster.length - maxInitialRender) + ' more addresses</span>';
+                        contentHtml += '</div>';
+                    }
+
+                    // Add dropoff as final stop
+                    contentHtml += '<div class="address-item dropoff">';
+                    contentHtml += '<span class="num">END</span>';
+                    contentHtml += '<span class="address">🏁 ' + escapeHtml(dropoff.address) + ' (Drop-off)</span>';
+                    contentHtml += '<a href="' + getMapsLink(dropoff) + '" target="_blank">Maps ↗</a>';
+                    contentHtml += '</div>';
+
+                    contentHtml += '</div></div>';
+
+                    card.innerHTML = headerHtml + contentHtml;
+                    fragment.appendChild(card);
+                }
+
+                driverResults.appendChild(fragment);
+                currentIndex = endIndex;
+
+                if (currentIndex < clusters.length) {
+                    // Render next batch after a short delay
+                    setTimeout(renderBatch, 30);
+                } else {
+                    // All cards rendered - set up event listeners
+                    setupEventListeners();
+                    // Open first driver
+                    var firstContent = document.getElementById('driver-content-0');
+                    if (firstContent) firstContent.classList.add('open');
+                }
+            }
+
+            function setupEventListeners() {
+                // Header click handlers
+                var headers = driverResults.querySelectorAll('.driver-header');
+                for (var h = 0; h < headers.length; h++) {
+                    headers[h].addEventListener('click', function(e) {
+                        if (e.target.tagName === 'BUTTON') return;
+                        var idx = parseInt(this.getAttribute('data-index'));
+                        var content = document.getElementById('driver-content-' + idx);
+                        var wasOpen = content.classList.contains('open');
+                        content.classList.toggle('open');
+                        if (!wasOpen && !driverMaps[idx]) {
+                            // Delay map init to let DOM update
+                            setTimeout(function() { initSingleDriverMap(idx); }, 150);
+                        } else if (wasOpen && driverMaps[idx]) {
+                            // Cleanup map when closing card to free memory
+                            driverMaps[idx] = null;
+                        }
+                    });
+                }
+
+                // Button handlers
+                var buttons = driverResults.querySelectorAll('button[data-action]');
+                for (var b = 0; b < buttons.length; b++) {
+                    buttons[b].addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        var action = this.getAttribute('data-action');
+                        var idx = parseInt(this.getAttribute('data-index'));
+                        if (action === 'html') downloadDriverHtml(idx);
+                        if (action === 'copy') copyDriver(idx);
+                    });
+                }
+
+                // Load more handlers
+                var loadMoreBtns = driverResults.querySelectorAll('.load-more');
+                for (var l = 0; l < loadMoreBtns.length; l++) {
+                    loadMoreBtns[l].addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        var driverIdx = parseInt(this.getAttribute('data-driver'));
+                        loadRemainingAddresses(driverIdx, this);
+                    });
+                }
+            }
+
+            // Start batched rendering
+            renderBatch();
+        }
+
+        function loadRemainingAddresses(driverIndex, loadMoreEl) {
+            var cluster = clusters[driverIndex];
+            var addressList = document.getElementById('address-list-' + driverIndex);
+            if (!addressList || !cluster) return;
+
+            // Build remaining addresses HTML
+            var fragment = document.createDocumentFragment();
+            for (var j = 20; j < cluster.length; j++) {
+                var addr = cluster[j];
+                var item = document.createElement('div');
+                item.className = 'address-item';
+                item.innerHTML = '<span class="num">' + (j + 1) + '.</span>' +
+                    '<span class="address">' + escapeHtml(addr.fullAddress) + '</span>' +
+                    '<a href="' + getMapsLink(addr) + '" target="_blank">Maps ↗</a>';
+                fragment.appendChild(item);
+            }
+
+            // Insert before dropoff (which is at the end)
+            var dropoffEl = addressList.querySelector('.address-item.dropoff');
+            if (dropoffEl) {
+                addressList.insertBefore(fragment, dropoffEl);
+            }
+
+            // Remove load more button
+            loadMoreEl.remove();
         }
         
         function initSingleDriverMap(driverIndex) {
             if (!window.google || !window.google.maps) return;
             if (driverMaps[driverIndex]) return;
-            
+
             var mapEl = document.getElementById('driver-map-' + driverIndex);
-            if (!mapEl) return;
+            // Check element exists AND is visible (has layout)
+            if (!mapEl || !mapEl.offsetParent) return;
             
             var cluster = clusters[driverIndex];
             if (!cluster || cluster.length === 0) {
