@@ -828,15 +828,32 @@
             return sorted;
         }
 
-        // Sort addresses within a street by house number
+        // Sort addresses within a street: odds first (ascending), then evens (descending)
+        // This creates a sweep pattern - do one side of street, then return on other side
         function sortAddressesWithinStreet(addresses) {
             if (addresses.length <= 1) return addresses;
 
-            return addresses.slice().sort(function(a, b) {
-                var numA = parseInt(a.address) || 0;
-                var numB = parseInt(b.address) || 0;
-                return numA - numB;
+            var odds = [], evens = [];
+            for (var i = 0; i < addresses.length; i++) {
+                var num = parseInt(addresses[i].address) || 0;
+                if (num % 2 === 1) {
+                    odds.push(addresses[i]);
+                } else {
+                    evens.push(addresses[i]);
+                }
+            }
+
+            // Sort odds ascending (1, 3, 5, 7...)
+            odds.sort(function(a, b) {
+                return (parseInt(a.address) || 0) - (parseInt(b.address) || 0);
             });
+
+            // Sort evens descending (8, 6, 4, 2...) - so we end near where we started
+            evens.sort(function(a, b) {
+                return (parseInt(b.address) || 0) - (parseInt(a.address) || 0);
+            });
+
+            return odds.concat(evens);
         }
 
         // ========== ROAD-BASED ROUTE ASSIGNMENT ==========
@@ -3161,16 +3178,34 @@
                 groups[key].addresses.push(addr);
             }
             
-            // Sort addresses within each group by street name/number
+            // Sort addresses within each group by street name, then odd/even sweep
             var groupKeys = Object.keys(groups);
             for (var k = 0; k < groupKeys.length; k++) {
                 var g = groups[groupKeys[k]];
-                g.addresses.sort(function(a, b) {
-                    var streetA = a.address.replace(/^\d+\s*/, '');
-                    var streetB = b.address.replace(/^\d+\s*/, '');
-                    if (streetA !== streetB) return streetA.localeCompare(streetB);
-                    return (parseInt(a.address) || 0) - (parseInt(b.address) || 0);
-                });
+                // First group by street name
+                var streetMap = {};
+                for (var s = 0; s < g.addresses.length; s++) {
+                    var addr = g.addresses[s];
+                    var streetName = addr.address.replace(/^\d+\s*/, '');
+                    if (!streetMap[streetName]) streetMap[streetName] = [];
+                    streetMap[streetName].push(addr);
+                }
+                // Sort each street with odd/even sweep, then combine
+                var sortedAddrs = [];
+                var streets = Object.keys(streetMap).sort();
+                for (var si = 0; si < streets.length; si++) {
+                    var streetAddrs = streetMap[streets[si]];
+                    var odds = [], evens = [];
+                    for (var ai = 0; ai < streetAddrs.length; ai++) {
+                        var num = parseInt(streetAddrs[ai].address) || 0;
+                        if (num % 2 === 1) odds.push(streetAddrs[ai]);
+                        else evens.push(streetAddrs[ai]);
+                    }
+                    odds.sort(function(a, b) { return (parseInt(a.address)||0) - (parseInt(b.address)||0); });
+                    evens.sort(function(a, b) { return (parseInt(b.address)||0) - (parseInt(a.address)||0); });
+                    sortedAddrs = sortedAddrs.concat(odds).concat(evens);
+                }
+                g.addresses = sortedAddrs;
             }
             
             var groupList = [];
