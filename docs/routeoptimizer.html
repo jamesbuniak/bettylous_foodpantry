@@ -142,13 +142,9 @@
             <p>Letter Carrier Food Drive — Route Optimizer</p>
         </header>
         
-        <div class="card">
-            <h2>Step 1: Google Maps API Key</h2>
-            <div class="form-group">
-                <label for="apiKey">API Key (required for maps)</label>
-                <input type="text" id="apiKey" placeholder="AIzaSy...">
-                <small>Get a key from <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>. Enable "Maps JavaScript API".</small>
-            </div>
+        <div class="card" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 2px solid #4CAF50;">
+            <h2 style="color: #2e7d32;">🆓 No API Key Required!</h2>
+            <p style="color: #388e3c; margin: 0;">This tool uses free OpenStreetMap maps. No setup needed — just upload your addresses and generate routes.</p>
         </div>
         
         <div class="card">
@@ -215,7 +211,6 @@
                     <input type="number" id="maxAddresses" value="0" min="0" style="width: 100px;">
                     <small style="display: block; margin-top: 3px;">0 = no limit</small>
                 </div>
-                <button class="btn btn-secondary" id="updateDriversBtn">Update Driver List</button>
             </div>
             <div class="driver-list" id="driverList"></div>
         </div>
@@ -235,11 +230,9 @@
             <div class="results-header">
                 <h2>Routes Generated</h2>
                 <div class="results-actions">
-                    <label style="display: flex; align-items: center; gap: 5px; font-size: 0.9rem; cursor: pointer; margin-right: 10px;">
-                        <input type="checkbox" id="groupByStreet"> Group by street
-                    </label>
                     <button class="btn btn-success" id="downloadAllHtmlBtn">Download All HTML</button>
                     <button class="btn btn-secondary" id="downloadAllTxtBtn">Download All TXT</button>
+                    <button class="btn btn-secondary" id="downloadDebugLogBtn">Download Debug Log</button>
                 </div>
             </div>
             <div class="total-stats" id="totalStats"></div>
@@ -255,6 +248,8 @@
     
     <div class="copied-toast" id="toast">Copied to clipboard!</div>
 
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     
@@ -342,9 +337,9 @@
         var clusters = [];
         var drivers = [];
         var loadedFileName = '';
-        var googleLoaded = false;
         var driverMaps = {};
         var dropoff = { address: '', lat: 0, lng: 0 };
+        var balanceLog = []; // Debug log for balancing algorithm
 
         // DOM ELEMENTS
         var loadDatabaseBtn = document.getElementById('loadDatabaseBtn');
@@ -353,7 +348,6 @@
         var fileStats = document.getElementById('fileStats');
         var driverCountInput = document.getElementById('driverCount');
         var driverListEl = document.getElementById('driverList');
-        var updateDriversBtn = document.getElementById('updateDriversBtn');
         var generateBtn = document.getElementById('generateBtn');
         var progress = document.getElementById('progress');
         var progressFill = document.getElementById('progressFill');
@@ -363,14 +357,13 @@
         var totalStats = document.getElementById('totalStats');
         var downloadAllHtmlBtn = document.getElementById('downloadAllHtmlBtn');
         var downloadAllTxtBtn = document.getElementById('downloadAllTxtBtn');
+        var downloadDebugLogBtn = document.getElementById('downloadDebugLogBtn');
         var toast = document.getElementById('toast');
-        var apiKeyInput = document.getElementById('apiKey');
         var dropoffAddressInput = document.getElementById('dropoffAddress');
         var dropoffLatInput = document.getElementById('dropoffLat');
         var dropoffLngInput = document.getElementById('dropoffLng');
         var minAddressesInput = document.getElementById('minAddresses');
         var maxAddressesInput = document.getElementById('maxAddresses');
-        var groupByStreetCheckbox = document.getElementById('groupByStreet');
         var summaryMapEl = document.getElementById('summaryMap');
         var summaryLegendEl = document.getElementById('summaryLegend');
         
@@ -407,7 +400,7 @@
             }
         }
         
-        updateDriversBtn.addEventListener('click', updateDriverList);
+        driverCountInput.addEventListener('input', updateDriverList);
         updateDriverList();
 
         // LOAD DATABASE ADDRESSES
@@ -503,35 +496,7 @@
             generateBtn.disabled = addresses.length === 0;
         }
         
-        // GOOGLE MAPS LOADING
-        function loadGoogleMaps(callback) {
-            var apiKey = apiKeyInput.value.trim();
-            if (!apiKey) {
-                alert('Please enter a Google Maps API key');
-                return false;
-            }
-            
-            if (googleLoaded && window.google && window.google.maps) {
-                callback();
-                return true;
-            }
-            
-            window.initGoogleMaps = function() {
-                googleLoaded = true;
-                callback();
-            };
-            
-            var script = document.createElement('script');
-            script.src = 'https://maps.googleapis.com/maps/api/js?key=' + apiKey + '&callback=initGoogleMaps';
-            script.async = true;
-            script.defer = true;
-            script.onerror = function() {
-                alert('Failed to load Google Maps. Check your API key.');
-                generateBtn.disabled = false;
-            };
-            document.head.appendChild(script);
-            return true;
-        }
+        // LEAFLET MAPS (free, no API key required)
         
         // GENERATE ROUTES
         generateBtn.addEventListener('click', function() {
@@ -539,98 +504,2356 @@
                 alert('Please upload a CSV file first');
                 return;
             }
-            
+
             // Get dropoff info
             dropoff.address = dropoffAddressInput.value.trim();
             dropoff.lat = parseFloat(dropoffLatInput.value);
             dropoff.lng = parseFloat(dropoffLngInput.value);
-            
+
             if (!dropoff.address || isNaN(dropoff.lat) || isNaN(dropoff.lng)) {
                 alert('Please enter valid drop-off location coordinates');
                 return;
             }
-            
+
             generateBtn.disabled = true;
-            
-            if (!loadGoogleMaps(runGeneration)) {
-                generateBtn.disabled = false;
-            }
+            runGeneration();
         });
         
         function runGeneration() {
             progress.style.display = 'block';
             progressFill.style.width = '0%';
-            progressText.textContent = 'Clustering addresses...';
+            progressText.textContent = 'Grouping addresses by street...';
             driverMaps = {};
-
-            var minPerDriver = parseInt(minAddressesInput.value) || 0;
-            var maxPerDriver = parseInt(maxAddressesInput.value) || 0;
 
             setTimeout(function() {
                 var numDrivers = drivers.length;
-                var points = [];
-                for (var i = 0; i < addresses.length; i++) {
-                    points.push([addresses[i].lat, addresses[i].lng]);
-                }
 
-                progressFill.style.width = '30%';
-                var result = kmeans(points, numDrivers, 100);
+                // Step 1: Group all addresses by street name
+                progressFill.style.width = '10%';
+                var streetGroups = groupAddressesByStreet(addresses);
 
-                progressFill.style.width = '50%';
-                progressText.textContent = 'Balancing routes...';
+                progressFill.style.width = '20%';
+                progressText.textContent = 'Sorting streets geographically...';
 
                 setTimeout(function() {
-                    // Assign addresses to clusters
-                    clusters = [];
-                    for (var i = 0; i < numDrivers; i++) clusters.push([]);
-                    for (var i = 0; i < result.clusters.length; i++) {
-                        clusters[result.clusters[i]].push(addresses[i]);
-                    }
+                    // Step 2: Sort streets geographically (cluster nearby streets)
+                    var sortedStreets = sortStreetsGeographically(streetGroups);
 
-                    // Apply min/max balancing if constraints are set
-                    if (minPerDriver > 0 || maxPerDriver > 0) {
-                        clusters = balanceClusters(clusters, minPerDriver, maxPerDriver);
-                    }
-
-                    progressFill.style.width = '70%';
-                    progressText.textContent = 'Ordering routes...';
+                    progressFill.style.width = '40%';
+                    progressText.textContent = 'Distributing streets to drivers...';
 
                     setTimeout(function() {
-                        // Order each cluster to end at dropoff
-                        for (var i = 0; i < clusters.length; i++) {
-                            clusters[i] = orderClusterToDropoff(clusters[i]);
-                        }
+                        // Step 3: Distribute streets to drivers using road-based approach
+                        progressText.textContent = 'Fetching road data and distributing routes...';
 
-                        progressFill.style.width = '90%';
-                        progressText.textContent = 'Calculating distances...';
+                        distributeStreetsWithRoads(sortedStreets, numDrivers, function(result) {
+                            clusters = result;
 
-                        setTimeout(function() {
-                            // Calculate mileage for each cluster
-                            for (var i = 0; i < clusters.length; i++) {
-                                calculateClusterMileage(clusters[i]);
+                            // Update drivers array to match number of sections/clusters
+                            if (clusters.length !== drivers.length) {
+                                drivers = [];
+                                for (var i = 0; i < clusters.length; i++) {
+                                    drivers.push({ id: i, name: 'Section ' + (i + 1) });
+                                }
+                                driverCountInput.value = clusters.length;
                             }
 
-                            renderResults();
-
-                            progressFill.style.width = '100%';
-                            progressText.textContent = 'Complete!';
+                            progressFill.style.width = '60%';
+                            progressText.textContent = 'Optimizing route order...';
 
                             setTimeout(function() {
-                                progress.style.display = 'none';
-                                generateBtn.disabled = false;
-                                // Init summary map and first driver map - wait for DOM to fully stabilize
+                                // Step 4: Order addresses within each driver's route
+                                for (var i = 0; i < clusters.length; i++) {
+                                    clusters[i] = orderClusterToDropoff(clusters[i]);
+                                }
+
+                                progressFill.style.width = '80%';
+                                progressText.textContent = 'Calculating distances...';
+
                                 setTimeout(function() {
-                                    initSummaryMap();
-                                    var firstCard = document.querySelector('.driver-card .driver-content.open');
-                                    if (firstCard) {
-                                        initSingleDriverMap(0);
+                                    // Step 5: Calculate mileage
+                                    for (var i = 0; i < clusters.length; i++) {
+                                        calculateClusterMileage(clusters[i]);
                                     }
-                                }, 500);
-                            }, 300);
-                        }, 50);
+
+                                    // Step 6: Post-route balancing - DISABLED (fill by work should handle this)
+                                    // balanceLog.push('');
+                                    // balanceLog.push('=== POST-ROUTE BALANCING ===');
+                                    // clusters = balanceActualWork(clusters);
+
+                                    // Recalculate mileage after balancing
+                                    // for (var i = 0; i < clusters.length; i++) {
+                                    //     clusters[i] = orderClusterToDropoff(clusters[i]);
+                                    //     calculateClusterMileage(clusters[i]);
+                                    // }
+
+                                    // Log actual final work scores
+                                    balanceLog.push('');
+                                    balanceLog.push('=== ACTUAL FINAL WORK ===');
+                                    var actualMin = Infinity, actualMax = -1, actualTotal = 0;
+                                    for (var i = 0; i < clusters.length; i++) {
+                                        var stops = clusters[i].length;
+                                        var miles = clusters[i].totalMiles || 0;
+                                        var work = Math.round(stops * miles);
+                                        actualTotal += work;
+                                        if (work < actualMin) actualMin = work;
+                                        if (work > actualMax) actualMax = work;
+                                        balanceLog.push('Driver ' + (i + 1) + ': ' + stops + ' stops, ' +
+                                            miles.toFixed(1) + ' mi, work=' + work);
+                                    }
+                                    var actualAvg = actualTotal / clusters.length;
+                                    balanceLog.push('');
+                                    balanceLog.push('ACTUAL SUMMARY: min=' + Math.round(actualMin) + ', max=' + Math.round(actualMax) +
+                                        ', avg=' + Math.round(actualAvg) + ', spread=' + ((actualMax - actualMin) / actualAvg * 100).toFixed(1) + '%');
+
+                                    renderResults();
+
+                                    progressFill.style.width = '100%';
+                                    progressText.textContent = 'Complete!';
+
+                                    setTimeout(function() {
+                                        progress.style.display = 'none';
+                                        generateBtn.disabled = false;
+                                        setTimeout(function() {
+                                            initSummaryMap();
+                                            var firstCard = document.querySelector('.driver-card .driver-content.open');
+                                            if (firstCard) {
+                                                initSingleDriverMap(0);
+                                            }
+                                        }, 500);
+                                    }, 300);
+                                }, 50);
+                            }, 50);
+                        }); // end distributeStreetsWithRoads callback
                     }, 50);
                 }, 50);
             }, 50);
+        }
+
+        // Group addresses by street name
+        function groupAddressesByStreet(addrs) {
+            var groups = {};
+            for (var i = 0; i < addrs.length; i++) {
+                var addr = addrs[i];
+                var streetName = getStreetName(addr.address);
+                if (!groups[streetName]) {
+                    groups[streetName] = {
+                        name: streetName,
+                        addresses: [],
+                        centroid: { lat: 0, lng: 0 }
+                    };
+                }
+                groups[streetName].addresses.push(addr);
+            }
+
+            // Calculate centroid for each street group
+            var streetList = [];
+            for (var name in groups) {
+                var group = groups[name];
+                var sumLat = 0, sumLng = 0;
+                for (var i = 0; i < group.addresses.length; i++) {
+                    sumLat += group.addresses[i].lat;
+                    sumLng += group.addresses[i].lng;
+                }
+                group.centroid.lat = sumLat / group.addresses.length;
+                group.centroid.lng = sumLng / group.addresses.length;
+                streetList.push(group);
+            }
+
+            return streetList;
+        }
+
+        // Sort streets geographically using nearest-neighbor from dropoff
+        function sortStreetsGeographically(streetList) {
+            if (streetList.length === 0) return [];
+
+            // Start from the street furthest from dropoff
+            var sorted = [];
+            var remaining = streetList.slice();
+
+            // Find furthest street from dropoff to start
+            var maxDist = -1;
+            var startIdx = 0;
+            for (var i = 0; i < remaining.length; i++) {
+                var d = haversine(remaining[i].centroid.lat, remaining[i].centroid.lng, dropoff.lat, dropoff.lng);
+                if (d > maxDist) {
+                    maxDist = d;
+                    startIdx = i;
+                }
+            }
+
+            sorted.push(remaining.splice(startIdx, 1)[0]);
+
+            // Nearest neighbor ordering
+            while (remaining.length > 0) {
+                var last = sorted[sorted.length - 1];
+                var nearestIdx = 0;
+                var nearestDist = Infinity;
+
+                for (var i = 0; i < remaining.length; i++) {
+                    var d = haversine(last.centroid.lat, last.centroid.lng,
+                                      remaining[i].centroid.lat, remaining[i].centroid.lng);
+                    if (d < nearestDist) {
+                        nearestDist = d;
+                        nearestIdx = i;
+                    }
+                }
+
+                sorted.push(remaining.splice(nearestIdx, 1)[0]);
+            }
+
+            return sorted;
+        }
+
+        // Sort streets within a single driver's region using nearest-neighbor
+        function sortStreetsWithinRegion(streets) {
+            if (streets.length <= 1) return streets;
+
+            var sorted = [];
+            var remaining = streets.slice();
+
+            // Find street furthest from dropoff to start
+            var maxDist = -1;
+            var startIdx = 0;
+            for (var i = 0; i < remaining.length; i++) {
+                var d = haversine(remaining[i].centroid.lat, remaining[i].centroid.lng, dropoff.lat, dropoff.lng);
+                if (d > maxDist) {
+                    maxDist = d;
+                    startIdx = i;
+                }
+            }
+
+            sorted.push(remaining.splice(startIdx, 1)[0]);
+
+            // Nearest neighbor ordering - work toward dropoff
+            while (remaining.length > 0) {
+                var last = sorted[sorted.length - 1];
+                var nearestIdx = 0;
+                var nearestDist = Infinity;
+
+                for (var i = 0; i < remaining.length; i++) {
+                    var d = haversine(last.centroid.lat, last.centroid.lng,
+                                      remaining[i].centroid.lat, remaining[i].centroid.lng);
+                    if (d < nearestDist) {
+                        nearestDist = d;
+                        nearestIdx = i;
+                    }
+                }
+
+                sorted.push(remaining.splice(nearestIdx, 1)[0]);
+            }
+
+            return sorted;
+        }
+
+        // Sort addresses within a street by house number
+        function sortAddressesWithinStreet(addresses) {
+            if (addresses.length <= 1) return addresses;
+
+            return addresses.slice().sort(function(a, b) {
+                var numA = parseInt(a.address) || 0;
+                var numB = parseInt(b.address) || 0;
+                return numA - numB;
+            });
+        }
+
+        // ========== ROAD-BASED ROUTE ASSIGNMENT ==========
+
+        // Fetch major roads from OpenStreetMap Overpass API
+        function fetchMajorRoads(bounds, callback) {
+            // Overpass API query for major roads
+            var query = '[out:json];way["highway"~"primary|secondary|trunk|motorway"](' +
+                bounds.minLat + ',' + bounds.minLng + ',' +
+                bounds.maxLat + ',' + bounds.maxLng + ');out geom;';
+
+            var url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+
+            fetch(url)
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    var roads = [];
+                    if (data.elements) {
+                        for (var i = 0; i < data.elements.length; i++) {
+                            var way = data.elements[i];
+                            if (way.geometry && way.geometry.length >= 2) {
+                                roads.push({
+                                    id: way.id,
+                                    name: (way.tags && (way.tags.name || way.tags.ref)) || 'unnamed',
+                                    type: way.tags ? way.tags.highway : 'unknown',
+                                    points: way.geometry.map(function(p) {
+                                        return { lat: p.lat, lng: p.lon };
+                                    })
+                                });
+                            }
+                        }
+                    }
+                    callback(roads);
+                })
+                .catch(function(err) {
+                    console.error('Failed to fetch roads:', err);
+                    callback([]);
+                });
+        }
+
+        // Determine which side of a line a point is on
+        // Returns > 0 for left, < 0 for right, 0 for on the line
+        function pointSideOfLine(point, lineStart, lineEnd) {
+            return (lineEnd.lng - lineStart.lng) * (point.lat - lineStart.lat) -
+                   (lineEnd.lat - lineStart.lat) * (point.lng - lineStart.lng);
+        }
+
+        // Calculate work for a set of streets (stops × mileage)
+        function calculateRegionWork(streets) {
+            if (streets.length === 0) return 0;
+
+            var totalStops = 0;
+            var totalMileage = 0;
+
+            // Count stops
+            for (var i = 0; i < streets.length; i++) {
+                totalStops += streets[i].addresses.length;
+            }
+
+            // Calculate mileage (sum of distances between consecutive street centroids)
+            var sorted = sortStreetsWithinRegion(streets);
+            for (var i = 1; i < sorted.length; i++) {
+                totalMileage += haversine(
+                    sorted[i-1].centroid.lat, sorted[i-1].centroid.lng,
+                    sorted[i].centroid.lat, sorted[i].centroid.lng
+                );
+            }
+
+            // Work = stops × mileage (or just stops if mileage is 0)
+            return totalMileage > 0 ? totalStops * totalMileage : totalStops;
+        }
+
+        // ========== STEERED SINGLE ROUTE, THEN DIVIDE ==========
+
+        // Build ONE complete route from dropoff toward furthest point
+        // Within a street: pick closest address
+        // When changing streets: use weighted score (closeness + direction toward FAR)
+        // Then divide the ordered route among drivers
+        function distributeByProximityFill(addresses, numDrivers, startPoint, callback) {
+            // Clear and initialize debug log
+            balanceLog = [];
+            balanceLog.push('=== STEERED SINGLE ROUTE, THEN DIVIDE ===');
+            balanceLog.push('Timestamp: ' + new Date().toISOString());
+            balanceLog.push('Total addresses: ' + addresses.length);
+            balanceLog.push('Number of drivers: ' + numDrivers);
+            balanceLog.push('Dropoff: ' + startPoint.lat.toFixed(4) + ', ' + startPoint.lng.toFixed(4));
+            balanceLog.push('');
+
+            var totalStops = addresses.length;
+
+            // STEP 1: Find furthest point from dropoff (target anchor)
+            balanceLog.push('--- STEP 1: Find furthest point (target anchor) ---');
+            var farPoint = { lat: startPoint.lat, lng: startPoint.lng };
+            var maxDist = 0;
+            for (var i = 0; i < addresses.length; i++) {
+                var dist = haversine(startPoint.lat, startPoint.lng, addresses[i].lat, addresses[i].lng);
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    farPoint = { lat: addresses[i].lat, lng: addresses[i].lng };
+                }
+            }
+            balanceLog.push('Furthest point: ' + farPoint.lat.toFixed(4) + ', ' + farPoint.lng.toFixed(4));
+            balanceLog.push('Distance from dropoff: ' + maxDist.toFixed(2) + ' mi');
+            balanceLog.push('');
+
+            // STEP 2: Group addresses by street
+            balanceLog.push('--- STEP 2: Group addresses by street ---');
+            var streetMap = {};
+            for (var i = 0; i < addresses.length; i++) {
+                var streetName = getStreetName(addresses[i].address);
+                if (!streetMap[streetName]) {
+                    streetMap[streetName] = {
+                        name: streetName,
+                        addressIndices: [],
+                        centroid: { lat: 0, lng: 0 }
+                    };
+                }
+                streetMap[streetName].addressIndices.push(i);
+            }
+            // Calculate centroids
+            var streets = [];
+            for (var name in streetMap) {
+                var street = streetMap[name];
+                var sumLat = 0, sumLng = 0;
+                for (var j = 0; j < street.addressIndices.length; j++) {
+                    var idx = street.addressIndices[j];
+                    sumLat += addresses[idx].lat;
+                    sumLng += addresses[idx].lng;
+                }
+                street.centroid = {
+                    lat: sumLat / street.addressIndices.length,
+                    lng: sumLng / street.addressIndices.length
+                };
+                streets.push(street);
+            }
+            balanceLog.push('Total streets: ' + streets.length);
+            balanceLog.push('');
+
+            // Helper functions for stats
+            function calcCenterOfMass(cluster) {
+                if (cluster.length === 0) return null;
+                if (cluster.length === 1) return { lat: cluster[0].lat, lng: cluster[0].lng };
+                var sumLat = 0, sumLng = 0, totalWeight = 0;
+                var prevPt = startPoint;
+                for (var i = 0; i < cluster.length; i++) {
+                    var legMiles = haversine(prevPt.lat, prevPt.lng, cluster[i].lat, cluster[i].lng);
+                    var weight = Math.max(legMiles, 0.01);
+                    sumLat += cluster[i].lat * weight;
+                    sumLng += cluster[i].lng * weight;
+                    totalWeight += weight;
+                    prevPt = { lat: cluster[i].lat, lng: cluster[i].lng };
+                }
+                return { lat: sumLat / totalWeight, lng: sumLng / totalWeight };
+            }
+
+            function calcSpread(cluster) {
+                if (cluster.length < 2) return 0;
+                var minLat = Infinity, maxLat = -Infinity;
+                var minLng = Infinity, maxLng = -Infinity;
+                for (var i = 0; i < cluster.length; i++) {
+                    if (cluster[i].lat < minLat) minLat = cluster[i].lat;
+                    if (cluster[i].lat > maxLat) maxLat = cluster[i].lat;
+                    if (cluster[i].lng < minLng) minLng = cluster[i].lng;
+                    if (cluster[i].lng > maxLng) maxLng = cluster[i].lng;
+                }
+                return haversine(minLat, minLng, maxLat, maxLng);
+            }
+
+            function calcWork(cluster) {
+                if (cluster.length === 0) return 0;
+                if (cluster.length === 1) return 1;  // Single stop = 1 work unit
+
+                // Calculate internal miles only (between stops, NOT from dropoff)
+                var miles = 0;
+                for (var i = 1; i < cluster.length; i++) {
+                    miles += haversine(cluster[i-1].lat, cluster[i-1].lng, cluster[i].lat, cluster[i].lng);
+                }
+                // Work = stops × internal miles (add small base to avoid zero)
+                return cluster.length * (miles + 0.1);
+            }
+
+            // STEP 3: Build ONE Steered Route
+            balanceLog.push('--- STEP 3: Build Steered Route ---');
+
+            // Find the furthest point from dropoff (this becomes our steering target)
+            var farPoint = { lat: startPoint.lat, lng: startPoint.lng };
+            var maxDistFromStart = 0;
+            for (var i = 0; i < addresses.length; i++) {
+                var dist = haversine(startPoint.lat, startPoint.lng, addresses[i].lat, addresses[i].lng);
+                if (dist > maxDistFromStart) {
+                    maxDistFromStart = dist;
+                    farPoint = { lat: addresses[i].lat, lng: addresses[i].lng };
+                }
+            }
+            balanceLog.push('Furthest point from dropoff: ' + maxDistFromStart.toFixed(2) + ' miles');
+
+            // Steering weights: balance between going to nearby streets vs steering toward far point
+            var closenessWeight = 0.7;  // Weight for picking nearby streets
+            var directionWeight = 0.3;  // Weight for steering toward far point
+
+            var used = new Array(addresses.length).fill(false);
+            var orderedRoute = [];  // Will contain address indices in order
+            var currentPoint = { lat: startPoint.lat, lng: startPoint.lng };
+            var currentStreet = '';
+            var totalMiles = 0;
+            var streetsVisited = 0;
+
+            // Helper: find closest unused address on a specific street
+            function findClosestOnStreet(point, streetName) {
+                var street = streetMap[streetName];
+                if (!street) return null;
+                var bestIdx = -1;
+                var bestDist = Infinity;
+                for (var j = 0; j < street.addressIndices.length; j++) {
+                    var idx = street.addressIndices[j];
+                    if (used[idx]) continue;
+                    var dist = haversine(point.lat, point.lng, addresses[idx].lat, addresses[idx].lng);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestIdx = idx;
+                    }
+                }
+                return bestIdx === -1 ? null : { index: bestIdx, dist: bestDist };
+            }
+
+            // Helper: check if a street has unused addresses
+            function streetHasUnused(streetName) {
+                var street = streetMap[streetName];
+                if (!street) return false;
+                for (var j = 0; j < street.addressIndices.length; j++) {
+                    if (!used[street.addressIndices[j]]) return true;
+                }
+                return false;
+            }
+
+            // Helper: pick next street with steering toward FAR
+            function pickNextStreetSteered(point) {
+                var bestStreet = null;
+                var bestScore = -Infinity;
+                var bestDist = Infinity;
+
+                for (var s = 0; s < streets.length; s++) {
+                    var street = streets[s];
+                    // Check if street has any unused addresses
+                    var hasUnused = false;
+                    for (var j = 0; j < street.addressIndices.length; j++) {
+                        if (!used[street.addressIndices[j]]) {
+                            hasUnused = true;
+                            break;
+                        }
+                    }
+                    if (!hasUnused) continue;
+
+                    var distToStreet = haversine(point.lat, point.lng, street.centroid.lat, street.centroid.lng);
+                    var distFromStreetToTarget = haversine(street.centroid.lat, street.centroid.lng, farPoint.lat, farPoint.lng);
+
+                    // Score: higher is better (invert distances)
+                    var closenessScore = 1 / (distToStreet + 0.001);
+                    var directionScore = 1 / (distFromStreetToTarget + 0.001);
+
+                    var score = (closenessWeight * closenessScore) + (directionWeight * directionScore);
+
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestStreet = street;
+                        bestDist = distToStreet;
+                    }
+                }
+                return bestStreet ? { street: bestStreet, dist: bestDist } : null;
+            }
+
+            // Build the route using STREET-BASED MOMENTUM
+            // Momentum = weighted average of recent STREET CENTROIDS (not individual stops)
+            // This way a street with 1 stop has same inertia as a street with 20 stops
+            var momentumWindow = 5;  // Look at last 5 streets for direction
+            var recentStreetCentroids = [];  // Track recent street centroids
+
+            // Helper: calculate momentum point (weighted average of recent street centroids)
+            function getMomentumPoint() {
+                if (recentStreetCentroids.length === 0) return currentPoint;
+                if (recentStreetCentroids.length < 2) return currentPoint;  // Not enough history yet
+
+                // Weighted average - more recent streets weighted higher
+                var totalWeight = 0;
+                var sumLat = 0;
+                var sumLng = 0;
+                for (var i = 0; i < recentStreetCentroids.length; i++) {
+                    var weight = i + 1;  // Later streets get higher weight
+                    sumLat += recentStreetCentroids[i].lat * weight;
+                    sumLng += recentStreetCentroids[i].lng * weight;
+                    totalWeight += weight;
+                }
+                return {
+                    lat: sumLat / totalWeight,
+                    lng: sumLng / totalWeight
+                };
+            }
+
+            // "En route" threshold - grab any address within this distance regardless of street
+            var enRouteThreshold = 0.15;  // miles (~800 feet)
+
+            // Helper: find closest unused address GLOBALLY within threshold
+            function findClosestGlobal(point, maxDist) {
+                var bestIdx = -1;
+                var bestDist = Infinity;
+                for (var i = 0; i < addresses.length; i++) {
+                    if (used[i]) continue;
+                    var dist = haversine(point.lat, point.lng, addresses[i].lat, addresses[i].lng);
+                    if (dist <= maxDist && dist < bestDist) {
+                        bestDist = dist;
+                        bestIdx = i;
+                    }
+                }
+                return bestIdx === -1 ? null : { index: bestIdx, dist: bestDist };
+            }
+
+            while (orderedRoute.length < addresses.length) {
+                // Calculate momentum point for steering decisions
+                var momentumPoint = getMomentumPoint();
+
+                // FIRST: Check if there's ANY address "en route" (within threshold of current point)
+                // Grab it regardless of street - don't walk past nearby stops!
+                var enRouteAddr = findClosestGlobal(currentPoint, enRouteThreshold);
+                if (enRouteAddr) {
+                    var addrStreet = getStreetName(addresses[enRouteAddr.index].address);
+                    orderedRoute.push(enRouteAddr.index);
+                    totalMiles += enRouteAddr.dist;
+                    used[enRouteAddr.index] = true;
+                    currentPoint = { lat: addresses[enRouteAddr.index].lat, lng: addresses[enRouteAddr.index].lng };
+                    // Update current street if different
+                    if (addrStreet !== currentStreet) {
+                        // Add previous street to momentum before switching
+                        if (currentStreet !== '' && streetMap[currentStreet]) {
+                            recentStreetCentroids.push({
+                                lat: streetMap[currentStreet].centroid.lat,
+                                lng: streetMap[currentStreet].centroid.lng
+                            });
+                            if (recentStreetCentroids.length > momentumWindow) recentStreetCentroids.shift();
+                        }
+                        currentStreet = addrStreet;
+                    }
+                    continue;
+                }
+
+                // No "en route" addresses - exhaust current street if any left
+                if (currentStreet !== '' && streetHasUnused(currentStreet)) {
+                    var nextOnStreet = findClosestOnStreet(currentPoint, currentStreet);
+                    if (nextOnStreet) {
+                        orderedRoute.push(nextOnStreet.index);
+                        totalMiles += nextOnStreet.dist;
+                        used[nextOnStreet.index] = true;
+                        currentPoint = { lat: addresses[nextOnStreet.index].lat, lng: addresses[nextOnStreet.index].lng };
+                        continue;
+                    }
+                }
+
+                // Done with current street - add its centroid to momentum history
+                if (currentStreet !== '' && streetMap[currentStreet]) {
+                    recentStreetCentroids.push({
+                        lat: streetMap[currentStreet].centroid.lat,
+                        lng: streetMap[currentStreet].centroid.lng
+                    });
+                    if (recentStreetCentroids.length > momentumWindow) recentStreetCentroids.shift();
+                }
+
+                // Recalculate momentum with updated street history
+                momentumPoint = getMomentumPoint();
+
+                // Pick next street with steering toward FAR - USE MOMENTUM POINT
+                var nextStreetResult = pickNextStreetSteered(momentumPoint);
+                if (!nextStreetResult) break;
+
+                currentStreet = nextStreetResult.street.name;
+                streetsVisited++;
+
+                // Add first (closest) address on new street - USE MOMENTUM POINT
+                var firstOnStreet = findClosestOnStreet(momentumPoint, currentStreet);
+                if (firstOnStreet) {
+                    orderedRoute.push(firstOnStreet.index);
+                    totalMiles += firstOnStreet.dist;
+                    used[firstOnStreet.index] = true;
+                    currentPoint = { lat: addresses[firstOnStreet.index].lat, lng: addresses[firstOnStreet.index].lng };
+                }
+            }
+
+            balanceLog.push('Route built: ' + orderedRoute.length + ' addresses, ' + totalMiles.toFixed(2) + ' mi, ' + streetsVisited + ' streets');
+            balanceLog.push('');
+
+            // ========== STEP 3b: OPTIMIZE ROUTE BY ELIMINATING OUTLIER GAPS ==========
+            balanceLog.push('--- STEP 3b: Optimize route (eliminate outlier gaps) ---');
+
+            // Helper: calculate leg distances for a route
+            function calculateLegDistances(route, start) {
+                var legs = [];
+                var prev = start;
+                for (var i = 0; i < route.length; i++) {
+                    var addr = addresses[route[i]];
+                    var dist = haversine(prev.lat, prev.lng, addr.lat, addr.lng);
+                    legs.push({ index: i, dist: dist, fromIdx: i === 0 ? -1 : route[i - 1], toIdx: route[i] });
+                    prev = { lat: addr.lat, lng: addr.lng };
+                }
+                return legs;
+            }
+
+            // Helper: calculate mean of distances
+            function calcMean(legs) {
+                var sum = 0;
+                for (var i = 0; i < legs.length; i++) sum += legs[i].dist;
+                return sum / legs.length;
+            }
+
+            // Helper: calculate standard deviation
+            function calcStdDev(legs, mean) {
+                var sumSq = 0;
+                for (var i = 0; i < legs.length; i++) {
+                    var diff = legs[i].dist - mean;
+                    sumSq += diff * diff;
+                }
+                return Math.sqrt(sumSq / legs.length);
+            }
+
+            // Helper: find max leg distance
+            function findMaxLeg(legs) {
+                var max = 0;
+                for (var i = 0; i < legs.length; i++) {
+                    if (legs[i].dist > max) max = legs[i].dist;
+                }
+                return max;
+            }
+
+            // Helper: calculate total route distance
+            function calcTotalDist(route, start) {
+                var total = 0;
+                var prev = start;
+                for (var i = 0; i < route.length; i++) {
+                    var addr = addresses[route[i]];
+                    total += haversine(prev.lat, prev.lng, addr.lat, addr.lng);
+                    prev = { lat: addr.lat, lng: addr.lng };
+                }
+                return total;
+            }
+
+            var maxPasses = 5;
+            for (var pass = 1; pass <= maxPasses; pass++) {
+                balanceLog.push('');
+                balanceLog.push('=== Optimization Pass ' + pass + ' ===');
+
+                // Calculate leg distances
+                var legs = calculateLegDistances(orderedRoute, startPoint);
+                var mean = calcMean(legs);
+                var stdDev = calcStdDev(legs, mean);
+                var threshold = mean;  // Aggressive - many small sections for fine-grained work distribution
+                var maxLeg = findMaxLeg(legs);
+                var totalDist = calcTotalDist(orderedRoute, startPoint);
+
+                balanceLog.push('Legs: ' + legs.length + ', Mean: ' + mean.toFixed(3) + ' mi, StdDev: ' + stdDev.toFixed(3) + ' mi');
+                balanceLog.push('Threshold (mean): ' + threshold.toFixed(3) + ' mi');
+                balanceLog.push('Max leg: ' + maxLeg.toFixed(3) + ' mi, Total: ' + totalDist.toFixed(2) + ' mi');
+
+                // Find outlier break points
+                var breakPoints = [];
+                for (var i = 0; i < legs.length; i++) {
+                    if (legs[i].dist > threshold) {
+                        breakPoints.push(i);
+                        balanceLog.push('  Outlier at leg ' + i + ': ' + legs[i].dist.toFixed(3) + ' mi');
+                    }
+                }
+
+                if (breakPoints.length === 0) {
+                    balanceLog.push('No outliers found - route is solid!');
+                    break;
+                }
+
+                balanceLog.push('Found ' + breakPoints.length + ' outlier gaps');
+
+                // Split route into sections at break points
+                var sections = [];
+                var sectionStart = 0;
+                for (var b = 0; b < breakPoints.length; b++) {
+                    var breakIdx = breakPoints[b];
+                    // Section ends at the break point (before the long jump)
+                    if (breakIdx > sectionStart) {
+                        var section = {
+                            indices: orderedRoute.slice(sectionStart, breakIdx),
+                            entryPoint: null,
+                            exitPoint: null
+                        };
+                        if (section.indices.length > 0) {
+                            var firstAddr = addresses[section.indices[0]];
+                            var lastAddr = addresses[section.indices[section.indices.length - 1]];
+                            section.entryPoint = { lat: firstAddr.lat, lng: firstAddr.lng };
+                            section.exitPoint = { lat: lastAddr.lat, lng: lastAddr.lng };
+                            sections.push(section);
+                        }
+                    }
+                    sectionStart = breakIdx;
+                }
+                // Add final section
+                if (sectionStart < orderedRoute.length) {
+                    var section = {
+                        indices: orderedRoute.slice(sectionStart),
+                        entryPoint: null,
+                        exitPoint: null
+                    };
+                    if (section.indices.length > 0) {
+                        var firstAddr = addresses[section.indices[0]];
+                        var lastAddr = addresses[section.indices[section.indices.length - 1]];
+                        section.entryPoint = { lat: firstAddr.lat, lng: firstAddr.lng };
+                        section.exitPoint = { lat: lastAddr.lat, lng: lastAddr.lng };
+                        sections.push(section);
+                    }
+                }
+
+                balanceLog.push('Split into ' + sections.length + ' sections');
+                for (var s = 0; s < sections.length; s++) {
+                    balanceLog.push('  Section ' + (s + 1) + ': ' + sections[s].indices.length + ' addresses');
+                }
+
+                // Rebuild route by connecting sections (closest entry point first)
+                var newRoute = [];
+                var usedSections = new Array(sections.length).fill(false);
+                var currentPt = { lat: startPoint.lat, lng: startPoint.lng };
+
+                while (newRoute.length < orderedRoute.length) {
+                    // Find closest unused section
+                    var bestSection = -1;
+                    var bestDist = Infinity;
+                    for (var s = 0; s < sections.length; s++) {
+                        if (usedSections[s]) continue;
+                        var dist = haversine(currentPt.lat, currentPt.lng, sections[s].entryPoint.lat, sections[s].entryPoint.lng);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestSection = s;
+                        }
+                    }
+
+                    if (bestSection === -1) break;
+
+                    // Add all addresses from this section
+                    for (var i = 0; i < sections[bestSection].indices.length; i++) {
+                        newRoute.push(sections[bestSection].indices[i]);
+                    }
+                    usedSections[bestSection] = true;
+                    currentPt = sections[bestSection].exitPoint;
+                }
+
+                // Calculate improvement
+                var newTotalDist = calcTotalDist(newRoute, startPoint);
+                var improvement = totalDist - newTotalDist;
+                balanceLog.push('Rebuilt route: ' + newTotalDist.toFixed(2) + ' mi (saved ' + improvement.toFixed(2) + ' mi)');
+
+                // Update route for next pass
+                orderedRoute = newRoute;
+            }
+
+            balanceLog.push('');
+            balanceLog.push('--- Optimization complete ---');
+            balanceLog.push('');
+
+            // Log the complete ordered route for verification
+            // TEMP: Filter out jumps greater than X miles for cleaner view
+            var maxJumpToShow = 0.1;  // Hide jumps > 0.1 miles
+            balanceLog.push('--- FINAL ORDERED ROUTE (hiding jumps > ' + maxJumpToShow + ' mi) ---');
+            var prevPt = startPoint;
+            var runningMiles = 0;
+            var hiddenJumps = 0;
+            var hiddenMiles = 0;
+            for (var r = 0; r < orderedRoute.length; r++) {
+                var addrIdx = orderedRoute[r];
+                var addr = addresses[addrIdx];
+                var legDist = haversine(prevPt.lat, prevPt.lng, addr.lat, addr.lng);
+                runningMiles += legDist;
+                var streetName = getStreetName(addr.address);
+                if (legDist <= maxJumpToShow) {
+                    balanceLog.push((r + 1) + '. [' + streetName + '] ' + addr.address + ' (+' + legDist.toFixed(2) + ' mi, total: ' + runningMiles.toFixed(2) + ' mi)');
+                } else {
+                    hiddenJumps++;
+                    hiddenMiles += legDist;
+                    balanceLog.push('--- JUMP ' + hiddenJumps + ': ' + legDist.toFixed(2) + ' mi (hidden) ---');
+                }
+                prevPt = { lat: addr.lat, lng: addr.lng };
+            }
+            balanceLog.push('');
+            balanceLog.push('Total route miles: ' + runningMiles.toFixed(2));
+            balanceLog.push('Hidden: ' + hiddenJumps + ' jumps totaling ' + hiddenMiles.toFixed(2) + ' mi');
+            balanceLog.push('');
+
+            // STEP 4: Create sections from streets (split by address number gaps > 1000)
+            balanceLog.push('--- STEP 4: Create sections from streets (gap threshold: 1000) ---');
+
+            // Helper to extract house number from address
+            function getHouseNumber(address) {
+                if (!address) return 0;
+                var match = address.match(/^(\d+)/);
+                return match ? parseInt(match[1], 10) : 0;
+            }
+
+            var initialSections = [];
+            var gapThreshold = 1000;
+
+            for (var name in streetMap) {
+                var street = streetMap[name];
+                if (street.addressIndices.length === 0) continue;
+
+                // Sort addresses by house number
+                var sortedIndices = street.addressIndices.slice().sort(function(a, b) {
+                    return getHouseNumber(addresses[a].address) - getHouseNumber(addresses[b].address);
+                });
+
+                // Split into sections based on gaps
+                var currentSection = [sortedIndices[0]];
+                var lastNumber = getHouseNumber(addresses[sortedIndices[0]].address);
+
+                for (var i = 1; i < sortedIndices.length; i++) {
+                    var idx = sortedIndices[i];
+                    var thisNumber = getHouseNumber(addresses[idx].address);
+                    var gap = thisNumber - lastNumber;
+
+                    if (gap > gapThreshold) {
+                        // Save current section and start new one
+                        var sumLat = 0, sumLng = 0;
+                        for (var j = 0; j < currentSection.length; j++) {
+                            sumLat += addresses[currentSection[j]].lat;
+                            sumLng += addresses[currentSection[j]].lng;
+                        }
+                        initialSections.push({
+                            indices: currentSection,
+                            centroid: { lat: sumLat / currentSection.length, lng: sumLng / currentSection.length },
+                            merged: false
+                        });
+                        currentSection = [idx];
+                    } else {
+                        currentSection.push(idx);
+                    }
+                    lastNumber = thisNumber;
+                }
+
+                // Save final section for this street
+                if (currentSection.length > 0) {
+                    var sumLat = 0, sumLng = 0;
+                    for (var j = 0; j < currentSection.length; j++) {
+                        sumLat += addresses[currentSection[j]].lat;
+                        sumLng += addresses[currentSection[j]].lng;
+                    }
+                    initialSections.push({
+                        indices: currentSection,
+                        centroid: { lat: sumLat / currentSection.length, lng: sumLng / currentSection.length },
+                        merged: false
+                    });
+                }
+            }
+            balanceLog.push('Created ' + initialSections.length + ' sections (streets split by gaps > ' + gapThreshold + ')');
+
+            // STEP 4b: Split high-spread sections by block (100s)
+            balanceLog.push('');
+            balanceLog.push('--- STEP 4b: Split high-spread sections by block ---');
+
+            // Calculate spread for each section
+            var sectionSpreads = [];
+            for (var i = 0; i < initialSections.length; i++) {
+                var section = initialSections[i];
+                var cluster = [];
+                for (var j = 0; j < section.indices.length; j++) {
+                    cluster.push(addresses[section.indices[j]]);
+                }
+                var spread = calcSpread(cluster);
+                sectionSpreads.push({ index: i, spread: spread });
+            }
+
+            // Calculate mean and std dev of spreads
+            var sumSpread = 0;
+            for (var i = 0; i < sectionSpreads.length; i++) sumSpread += sectionSpreads[i].spread;
+            var meanSpread = sumSpread / sectionSpreads.length;
+
+            var sumSqSpread = 0;
+            for (var i = 0; i < sectionSpreads.length; i++) {
+                var diff = sectionSpreads[i].spread - meanSpread;
+                sumSqSpread += diff * diff;
+            }
+            var stdDevSpread = Math.sqrt(sumSqSpread / sectionSpreads.length);
+
+            var spreadThreshold = meanSpread + stdDevSpread;
+            balanceLog.push('Spread stats: mean=' + meanSpread.toFixed(3) + ' mi, stdDev=' + stdDevSpread.toFixed(3) + ' mi');
+            balanceLog.push('Split threshold: ' + spreadThreshold.toFixed(3) + ' mi (mean + 1 stdDev)');
+
+            // Split high-spread sections by block (100s)
+            var refinedSections = [];
+            var splitCount = 0;
+
+            for (var i = 0; i < initialSections.length; i++) {
+                var section = initialSections[i];
+                var spread = sectionSpreads[i].spread;
+
+                if (spread > spreadThreshold && section.indices.length > 1) {
+                    // High spread - split by block (100s)
+                    var blockMap = {};
+                    for (var j = 0; j < section.indices.length; j++) {
+                        var idx = section.indices[j];
+                        var houseNum = getHouseNumber(addresses[idx].address);
+                        var block = Math.floor(houseNum / 100) * 100;  // 1321 -> 1300, 1456 -> 1400
+                        if (!blockMap[block]) blockMap[block] = [];
+                        blockMap[block].push(idx);
+                    }
+
+                    // Create section for each block
+                    var blocks = Object.keys(blockMap).sort(function(a, b) { return parseInt(a) - parseInt(b); });
+                    if (blocks.length > 1) {
+                        splitCount++;
+                        for (var b = 0; b < blocks.length; b++) {
+                            var blockIndices = blockMap[blocks[b]];
+                            var sumLat = 0, sumLng = 0;
+                            for (var k = 0; k < blockIndices.length; k++) {
+                                sumLat += addresses[blockIndices[k]].lat;
+                                sumLng += addresses[blockIndices[k]].lng;
+                            }
+                            refinedSections.push({
+                                indices: blockIndices,
+                                centroid: { lat: sumLat / blockIndices.length, lng: sumLng / blockIndices.length }
+                            });
+                        }
+                    } else {
+                        // Only one block, keep as-is
+                        refinedSections.push(section);
+                    }
+                } else {
+                    // Normal spread - keep as-is
+                    refinedSections.push(section);
+                }
+            }
+
+            balanceLog.push('Split ' + splitCount + ' high-spread sections by block');
+            balanceLog.push('Sections after 4b: ' + refinedSections.length);
+
+            // STEP 4c: Split sections where consecutive points are > 0.3 miles apart
+            balanceLog.push('');
+            balanceLog.push('--- STEP 4c: Split by geographic distance (> 0.3 mi) ---');
+
+            var geoSplitSections = [];
+            var geoSplitCount = 0;
+            var distanceThreshold = 0.3;  // miles
+
+            for (var i = 0; i < refinedSections.length; i++) {
+                var section = refinedSections[i];
+                if (section.indices.length <= 1) {
+                    geoSplitSections.push(section);
+                    continue;
+                }
+
+                // Sort by house number for consistent ordering
+                var sortedIndices = section.indices.slice().sort(function(a, b) {
+                    return getHouseNumber(addresses[a].address) - getHouseNumber(addresses[b].address);
+                });
+
+                // Walk through and split when distance > threshold
+                var currentSection = [sortedIndices[0]];
+                var didSplit = false;
+
+                for (var j = 1; j < sortedIndices.length; j++) {
+                    var prevIdx = sortedIndices[j - 1];
+                    var currIdx = sortedIndices[j];
+                    var dist = haversine(
+                        addresses[prevIdx].lat, addresses[prevIdx].lng,
+                        addresses[currIdx].lat, addresses[currIdx].lng
+                    );
+
+                    if (dist > distanceThreshold) {
+                        // Save current section and start new one
+                        var sumLat = 0, sumLng = 0;
+                        for (var k = 0; k < currentSection.length; k++) {
+                            sumLat += addresses[currentSection[k]].lat;
+                            sumLng += addresses[currentSection[k]].lng;
+                        }
+                        geoSplitSections.push({
+                            indices: currentSection,
+                            centroid: { lat: sumLat / currentSection.length, lng: sumLng / currentSection.length }
+                        });
+                        currentSection = [currIdx];
+                        didSplit = true;
+                    } else {
+                        currentSection.push(currIdx);
+                    }
+                }
+
+                // Save final section
+                if (currentSection.length > 0) {
+                    var sumLat = 0, sumLng = 0;
+                    for (var k = 0; k < currentSection.length; k++) {
+                        sumLat += addresses[currentSection[k]].lat;
+                        sumLng += addresses[currentSection[k]].lng;
+                    }
+                    geoSplitSections.push({
+                        indices: currentSection,
+                        centroid: { lat: sumLat / currentSection.length, lng: sumLng / currentSection.length }
+                    });
+                }
+
+                if (didSplit) geoSplitCount++;
+            }
+
+            balanceLog.push('Split ' + geoSplitCount + ' sections by geographic distance');
+            balanceLog.push('Final section count: ' + geoSplitSections.length);
+
+            var finalSections = [];
+            for (var i = 0; i < geoSplitSections.length; i++) {
+                finalSections.push(geoSplitSections[i].indices);
+            }
+
+            // Convert sections to clusters (each section = one "driver" for display)
+            var finalClusters = [];
+            balanceLog.push('--- SECTION STATS ---');
+
+            for (var s = 0; s < finalSections.length; s++) {
+                var sectionIndices = finalSections[s];
+                var cluster = [];
+                for (var i = 0; i < sectionIndices.length; i++) {
+                    cluster.push(addresses[sectionIndices[i]]);
+                }
+                finalClusters.push(cluster);
+
+                // Calculate stats
+                var center = calcCenterOfMass(cluster);
+                var spread = calcSpread(cluster);
+                var work = calcWork(cluster);
+                var miles = 0;
+                var prevPt = startPoint;
+                for (var i = 0; i < cluster.length; i++) {
+                    miles += haversine(prevPt.lat, prevPt.lng, cluster[i].lat, cluster[i].lng);
+                    prevPt = { lat: cluster[i].lat, lng: cluster[i].lng };
+                }
+
+                balanceLog.push('Section ' + (s + 1) + ': ' + cluster.length + ' stops, ' + miles.toFixed(2) + ' mi, spread=' + spread.toFixed(2) + ' mi, work=' + Math.round(work));
+            }
+            balanceLog.push('');
+
+            // STEP 5: FURTHEST-FIRST BUCKET FILL
+            // Start from furthest points from global center, fill with closest sections, dynamic work quota
+            balanceLog.push('--- STEP 5: Furthest-First Bucket Fill ---');
+            balanceLog.push('Raw sections: ' + finalClusters.length + ', Target drivers: ' + numDrivers);
+
+            // Build section data with work and center of mass
+            var totalSectionWork = 0;
+            var sectionData = [];
+            var allAddresses = [];
+            for (var s = 0; s < finalClusters.length; s++) {
+                var section = finalClusters[s];
+                var work = calcWork(section);
+                var center = calcCenterOfMass(section);
+                sectionData.push({
+                    index: s,
+                    cluster: section,
+                    work: work,
+                    center: center,
+                    used: false
+                });
+                totalSectionWork += work;
+                for (var i = 0; i < section.length; i++) {
+                    allAddresses.push(section[i]);
+                }
+            }
+
+            // Calculate GLOBAL center of mass (for entire dataset)
+            var globalCenter = calcCenterOfMass(allAddresses);
+            balanceLog.push('Global center of mass: ' + globalCenter.lat.toFixed(4) + ', ' + globalCenter.lng.toFixed(4));
+            balanceLog.push('Total work: ' + Math.round(totalSectionWork));
+            balanceLog.push('');
+
+            // Track remaining work and drivers for dynamic quota
+            var remainingWork = totalSectionWork;
+            var remainingDrivers = numDrivers;
+            var buckets = [];
+
+            for (var d = 0; d < numDrivers; d++) {
+                // Calculate current work quota (dynamic - adjusts based on what's left)
+                var workQuota = remainingWork / remainingDrivers;
+                balanceLog.push('Driver ' + (d + 1) + ': quota=' + Math.round(workQuota) + ' (remaining: ' + Math.round(remainingWork) + '/' + remainingDrivers + ' drivers)');
+
+                // Find FURTHEST unused section from global center
+                var furthestIdx = -1;
+                var furthestDist = 0;
+                for (var s = 0; s < sectionData.length; s++) {
+                    if (sectionData[s].used || !sectionData[s].center) continue;
+                    var dist = haversine(globalCenter.lat, globalCenter.lng, sectionData[s].center.lat, sectionData[s].center.lng);
+                    if (dist > furthestDist) {
+                        furthestDist = dist;
+                        furthestIdx = s;
+                    }
+                }
+
+                if (furthestIdx === -1) break;  // No more unused sections
+
+                // Start bucket with furthest section
+                var bucket = {
+                    sections: [],
+                    addresses: [],
+                    work: 0,
+                    center: null
+                };
+
+                sectionData[furthestIdx].used = true;
+                bucket.sections.push(furthestIdx);
+                for (var i = 0; i < sectionData[furthestIdx].cluster.length; i++) {
+                    bucket.addresses.push(sectionData[furthestIdx].cluster[i]);
+                }
+                bucket.work = sectionData[furthestIdx].work;
+                bucket.center = sectionData[furthestIdx].center;
+
+                // Fill with CLOSEST unused sections until work quota met, then STOP
+                while (bucket.work < workQuota) {
+                    // Find closest unused section to bucket's center
+                    var closestIdx = -1;
+                    var closestDist = Infinity;
+
+                    for (var s = 0; s < sectionData.length; s++) {
+                        if (sectionData[s].used || !sectionData[s].center) continue;
+
+                        var dist = haversine(bucket.center.lat, bucket.center.lng, sectionData[s].center.lat, sectionData[s].center.lng);
+                        if (dist < closestDist) {
+                            closestDist = dist;
+                            closestIdx = s;
+                        }
+                    }
+
+                    if (closestIdx === -1) break;  // No more sections available
+
+                    // Add this section to bucket
+                    sectionData[closestIdx].used = true;
+                    bucket.sections.push(closestIdx);
+                    for (var i = 0; i < sectionData[closestIdx].cluster.length; i++) {
+                        bucket.addresses.push(sectionData[closestIdx].cluster[i]);
+                    }
+                    bucket.work += sectionData[closestIdx].work;
+
+                    // Recalculate bucket center of mass
+                    bucket.center = calcCenterOfMass(bucket.addresses);
+                }
+
+                buckets.push(bucket);
+                balanceLog.push('  → ' + bucket.sections.length + ' sections, ' + bucket.addresses.length + ' stops, work=' + Math.round(bucket.work) + ', dist from center=' + furthestDist.toFixed(2) + ' mi');
+
+                // Update remaining for next iteration
+                remainingWork -= bucket.work;
+                remainingDrivers--;
+
+                // Recalculate global center using only remaining unused sections
+                var remainingAddresses = [];
+                for (var s = 0; s < sectionData.length; s++) {
+                    if (!sectionData[s].used) {
+                        for (var i = 0; i < sectionData[s].cluster.length; i++) {
+                            remainingAddresses.push(sectionData[s].cluster[i]);
+                        }
+                    }
+                }
+                if (remainingAddresses.length > 0) {
+                    globalCenter = calcCenterOfMass(remainingAddresses);
+                }
+            }
+
+            // Add any remaining unused sections to the last bucket (shouldn't happen with this algorithm)
+            var remainingSections = 0;
+            for (var s = 0; s < sectionData.length; s++) {
+                if (!sectionData[s].used) {
+                    remainingSections++;
+                    if (buckets.length > 0) {
+                        var lastBucket = buckets[buckets.length - 1];
+                        lastBucket.sections.push(s);
+                        for (var i = 0; i < sectionData[s].cluster.length; i++) {
+                            lastBucket.addresses.push(sectionData[s].cluster[i]);
+                        }
+                        lastBucket.work += sectionData[s].work;
+                        sectionData[s].used = true;
+                    }
+                }
+            }
+            if (remainingSections > 0) {
+                balanceLog.push('Added ' + remainingSections + ' remaining sections to last bucket');
+            }
+
+            balanceLog.push('');
+            balanceLog.push('Created ' + buckets.length + ' buckets from ' + finalClusters.length + ' sections');
+
+            // Convert buckets to finalClusters for display
+            finalClusters = [];
+            for (var b = 0; b < buckets.length; b++) {
+                finalClusters.push(buckets[b].addresses);
+            }
+
+            // Log final bucket stats
+            balanceLog.push('');
+            balanceLog.push('--- FINAL BUCKET STATS ---');
+            for (var b = 0; b < buckets.length; b++) {
+                var spread = calcSpread(buckets[b].addresses);
+                balanceLog.push('Bucket ' + (b + 1) + ': ' + buckets[b].addresses.length + ' stops, spread=' + spread.toFixed(2) + ' mi, work=' + Math.round(buckets[b].work));
+            }
+            balanceLog.push('');
+
+            // FINAL CHECKSUM
+            var finalCount = 0;
+            for (var d = 0; d < finalClusters.length; d++) {
+                finalCount += finalClusters[d].length;
+            }
+            balanceLog.push('*** CHECKSUM: ' + finalCount + ' addresses assigned to ' + finalClusters.length + ' buckets ***');
+            if (finalCount !== totalStops) {
+                balanceLog.push('*** ERROR: LOST ' + (totalStops - finalCount) + ' ADDRESSES! ***');
+            } else {
+                balanceLog.push('*** SUCCESS: All addresses accounted for ***');
+            }
+
+            callback(finalClusters);
+        }
+
+        // Find the best dividing road that splits streets most evenly
+        function findBestDividingRoad(streets, roads, targetSplit) {
+            var bestRoad = null;
+            var bestScore = Infinity;
+            var bestLeftStreets = [];
+            var bestRightStreets = [];
+
+            for (var r = 0; r < roads.length; r++) {
+                var road = roads[r];
+                if (road.points.length < 2) continue;
+
+                // Use first and last point of road as the dividing line
+                var lineStart = road.points[0];
+                var lineEnd = road.points[road.points.length - 1];
+
+                var leftStreets = [];
+                var rightStreets = [];
+
+                for (var s = 0; s < streets.length; s++) {
+                    var street = streets[s];
+                    var side = pointSideOfLine(street.centroid, lineStart, lineEnd);
+                    if (side >= 0) {
+                        leftStreets.push(street);
+                    } else {
+                        rightStreets.push(street);
+                    }
+                }
+
+                // Score: how close to target split? Also penalize if one side is empty
+                if (leftStreets.length === 0 || rightStreets.length === 0) continue;
+
+                // Calculate work as stops × mileage for each side
+                var leftWork = calculateRegionWork(leftStreets);
+                var rightWork = calculateRegionWork(rightStreets);
+
+                var totalWork = leftWork + rightWork;
+                var leftRatio = leftWork / totalWork;
+                var score = Math.abs(leftRatio - targetSplit);
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestRoad = road;
+                    bestLeftStreets = leftStreets;
+                    bestRightStreets = rightStreets;
+                }
+            }
+
+            return {
+                road: bestRoad,
+                leftStreets: bestLeftStreets,
+                rightStreets: bestRightStreets,
+                score: bestScore
+            };
+        }
+
+        // Recursively divide streets using roads until we have enough regions
+        function divideByRoads(streets, roads, numRegions) {
+            if (numRegions <= 1 || streets.length === 0) {
+                return [streets];
+            }
+
+            // Find best road to split current set
+            var split = findBestDividingRoad(streets, roads, 0.5);
+
+            // If no good split found (score > 0.4 means very uneven), return as single region
+            if (!split.road || split.score > 0.4) {
+                // Fall back: split geographically (lat or lng based)
+                var sorted = streets.slice().sort(function(a, b) {
+                    return a.centroid.lat - b.centroid.lat;
+                });
+                var mid = Math.floor(sorted.length / 2);
+                split = {
+                    leftStreets: sorted.slice(0, mid),
+                    rightStreets: sorted.slice(mid)
+                };
+            }
+
+            // Recursively divide each half
+            var leftRegions = Math.floor(numRegions / 2);
+            var rightRegions = numRegions - leftRegions;
+
+            var left = divideByRoads(split.leftStreets, roads, leftRegions);
+            var right = divideByRoads(split.rightStreets, roads, rightRegions);
+
+            return left.concat(right);
+        }
+
+        // Merge Nx regions into final driver count by grouping nearby regions
+        function mergeRegionPairs(regions, numDrivers) {
+            var merged = [];
+            var used = new Array(regions.length).fill(false);
+
+            // CHECKSUM: Count addresses before merge
+            var preMergeCount = countTotalAddresses(regions);
+
+            // Calculate how many regions per driver we need to merge
+            var regionsPerDriver = Math.ceil(regions.length / numDrivers);
+
+            // Calculate work scores for all regions
+            var totalWork = 0;
+            var workScores = [];
+            for (var i = 0; i < regions.length; i++) {
+                var score = calculateWorkScore(regions[i]);
+                workScores.push(score.work);
+                totalWork += score.work;
+            }
+            var avgWork = totalWork / regions.length;
+            var targetWorkPerDriver = totalWork / numDrivers;
+
+            balanceLog.push('');
+            balanceLog.push('=== MERGE PHASE: ' + regions.length + ' regions → ' + numDrivers + ' drivers ===');
+            balanceLog.push('Regions per driver: ~' + regionsPerDriver);
+            balanceLog.push('Target work per driver: ' + Math.round(targetWorkPerDriver));
+            balanceLog.push('*** CHECKSUM: Pre-merge address count = ' + preMergeCount + ' ***');
+
+            while (merged.length < numDrivers) {
+                // Start a new driver group
+                var driverRegions = [];
+                var driverWork = 0;
+
+                // Find unused region with highest work to seed this driver
+                var seedIdx = -1;
+                var seedWork = -1;
+                for (var i = 0; i < regions.length; i++) {
+                    if (used[i]) continue;
+                    if (workScores[i] > seedWork) {
+                        seedWork = workScores[i];
+                        seedIdx = i;
+                    }
+                }
+
+                if (seedIdx === -1) break;
+
+                // Add seed region
+                driverRegions = driverRegions.concat(regions[seedIdx]);
+                driverWork += workScores[seedIdx];
+                used[seedIdx] = true;
+                var regionIndices = [seedIdx];
+
+                // Keep adding nearby regions until we reach target work or run out
+                var driversRemaining = numDrivers - merged.length;
+                var regionsRemaining = 0;
+                for (var i = 0; i < regions.length; i++) {
+                    if (!used[i]) regionsRemaining++;
+                }
+
+                // How many more regions should this driver get?
+                var regionsToAdd = Math.ceil(regionsRemaining / driversRemaining) - 1;
+
+                for (var added = 0; added < regionsToAdd; added++) {
+                    // Calculate centroid of current driver regions
+                    var driverCentroid = calculateRegionCentroid(driverRegions);
+
+                    // Find closest unused region
+                    var bestIdx = -1;
+                    var bestDist = Infinity;
+                    for (var j = 0; j < regions.length; j++) {
+                        if (used[j]) continue;
+                        var jCentroid = calculateRegionCentroid(regions[j]);
+                        var dist = haversine(driverCentroid.lat, driverCentroid.lng, jCentroid.lat, jCentroid.lng);
+
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestIdx = j;
+                        }
+                    }
+
+                    if (bestIdx === -1) break;
+
+                    // Add this region to the driver
+                    driverRegions = driverRegions.concat(regions[bestIdx]);
+                    driverWork += workScores[bestIdx];
+                    used[bestIdx] = true;
+                    regionIndices.push(bestIdx);
+                }
+
+                merged.push(driverRegions);
+                balanceLog.push('Driver ' + merged.length + ': merged regions [' + regionIndices.join(', ') + '] → work=' + Math.round(driverWork));
+            }
+
+            // CHECKSUM: Count addresses after merge
+            var postMergeCount = countTotalAddresses(merged);
+            balanceLog.push('*** CHECKSUM: Post-merge address count = ' + postMergeCount + ' ***');
+            if (postMergeCount !== preMergeCount) {
+                balanceLog.push('*** WARNING: LOST ' + (preMergeCount - postMergeCount) + ' ADDRESSES IN MERGE! ***');
+            }
+
+            return merged;
+        }
+
+        // Main road-based distribution function
+        function distributeStreetsToDriversRoadBased(streets, numDrivers, roads, callback) {
+            if (roads.length === 0) {
+                // No roads, fall back to grid
+                callback(null);
+                return;
+            }
+
+            // MASTER CHECKSUM: Count total addresses from input streets
+            var masterAddressCount = 0;
+            for (var i = 0; i < streets.length; i++) {
+                masterAddressCount += streets[i].addresses.length;
+            }
+            balanceLog.push('');
+            balanceLog.push('=================================================================');
+            balanceLog.push('*** MASTER CHECKSUM: Starting with ' + masterAddressCount + ' total addresses ***');
+            balanceLog.push('=================================================================');
+            balanceLog.push('');
+
+            // QUADRUPLE-AND-MERGE: Create 4x regions for better granularity
+            var multiplier = 4;
+            var virtualRegions = numDrivers * multiplier;
+            balanceLog.push('Using ' + multiplier + 'x-and-merge strategy: ' + virtualRegions + ' regions → ' + numDrivers + ' drivers');
+
+            // Divide streets into Nx regions using roads
+            var regions = divideByRoads(streets, roads, virtualRegions);
+
+            // Ensure we have at least virtualRegions
+            while (regions.length < virtualRegions) {
+                regions.push([]);
+            }
+
+            // Calculate target addresses per region for refinement
+            var totalAddresses = 0;
+            for (var r = 0; r < regions.length; r++) {
+                for (var s = 0; s < regions[r].length; s++) {
+                    totalAddresses += regions[r][s].addresses.length;
+                }
+            }
+            var targetPerRegion = Math.ceil(totalAddresses / virtualRegions);
+
+            // Checksum after division
+            balanceLog.push('*** CHECKSUM: After road division = ' + totalAddresses + ' addresses ***');
+            if (totalAddresses !== masterAddressCount) {
+                balanceLog.push('*** WARNING: Road division lost ' + (masterAddressCount - totalAddresses) + ' addresses! ***');
+            }
+
+            // Refine the Nx regions to balance work scores
+            refineRouteAssignments(regions, targetPerRegion);
+
+            // Merge Nx regions back to numDrivers by pairing adjacent regions
+            regions = mergeRegionPairs(regions, numDrivers);
+
+            // Convert regions to driver clusters (flat address arrays)
+            var driverClusters = [];
+            for (var r = 0; r < regions.length; r++) {
+                var regionStreets = regions[r];
+                var sorted = sortStreetsWithinRegion(regionStreets);
+
+                var cluster = [];
+                for (var s = 0; s < sorted.length; s++) {
+                    var street = sorted[s];
+                    var sortedAddresses = sortAddressesWithinStreet(street.addresses);
+                    for (var a = 0; a < sortedAddresses.length; a++) {
+                        cluster.push(sortedAddresses[a]);
+                    }
+                }
+                driverClusters.push(cluster);
+            }
+
+            // FINAL CHECKSUM: Count all addresses in driver clusters
+            var finalClusterCount = 0;
+            for (var d = 0; d < driverClusters.length; d++) {
+                finalClusterCount += driverClusters[d].length;
+            }
+            balanceLog.push('');
+            balanceLog.push('=================================================================');
+            balanceLog.push('*** FINAL CHECKSUM: Clusters contain ' + finalClusterCount + ' addresses ***');
+            balanceLog.push('*** Started with ' + masterAddressCount + ' addresses ***');
+            if (finalClusterCount !== masterAddressCount) {
+                balanceLog.push('*** ERROR: LOST ' + (masterAddressCount - finalClusterCount) + ' ADDRESSES! ***');
+            } else {
+                balanceLog.push('*** SUCCESS: All ' + masterAddressCount + ' addresses accounted for ***');
+            }
+            balanceLog.push('=================================================================');
+
+            callback(driverClusters);
+        }
+
+        // ========== GRID-BASED ROUTE ASSIGNMENT (FALLBACK) ==========
+
+        // Calculate grid parameters based on work (addresses × distance)
+        function calculateGridParameters(streets, numDrivers) {
+            if (streets.length === 0) {
+                return { cellSizeMiles: 1, bounds: { minLat: 0, maxLat: 0, minLng: 0, maxLng: 0 } };
+            }
+
+            // 1. Find bounding box
+            var minLat = Infinity, maxLat = -Infinity;
+            var minLng = Infinity, maxLng = -Infinity;
+            for (var i = 0; i < streets.length; i++) {
+                var c = streets[i].centroid;
+                if (c.lat < minLat) minLat = c.lat;
+                if (c.lat > maxLat) maxLat = c.lat;
+                if (c.lng < minLng) minLng = c.lng;
+                if (c.lng > maxLng) maxLng = c.lng;
+            }
+
+            // 2. Calculate total addresses
+            var totalAddresses = 0;
+            for (var i = 0; i < streets.length; i++) {
+                totalAddresses += streets[i].addresses.length;
+            }
+
+            // 3. Calculate average nearest-neighbor distance
+            var totalNearestDist = 0;
+            var sampleSize = Math.min(streets.length, 100); // Sample for performance
+            for (var i = 0; i < sampleSize; i++) {
+                var idx = Math.floor(i * streets.length / sampleSize);
+                var street = streets[idx];
+                var nearestDist = Infinity;
+                for (var j = 0; j < streets.length; j++) {
+                    if (i === j) continue;
+                    var d = haversine(street.centroid.lat, street.centroid.lng,
+                                      streets[j].centroid.lat, streets[j].centroid.lng);
+                    if (d < nearestDist) nearestDist = d;
+                }
+                if (nearestDist < Infinity) totalNearestDist += nearestDist;
+            }
+            var avgNearestDist = sampleSize > 0 ? totalNearestDist / sampleSize : 0.5;
+
+            // 4. Calculate area in miles
+            var latSpanMiles = (maxLat - minLat) * 69;
+            var lngSpanMiles = (maxLng - minLng) * 54; // Approx at 40° latitude
+            var totalAreaMiles = latSpanMiles * lngSpanMiles;
+
+            // 5. Target ~4 cells per driver for flexibility
+            var targetCells = Math.max(numDrivers * 4, 16);
+
+            // 6. Calculate cell size
+            var cellSizeMiles = Math.sqrt(totalAreaMiles / targetCells);
+
+            // 7. Clamp to reasonable range
+            cellSizeMiles = Math.max(0.25, Math.min(3.0, cellSizeMiles));
+
+            // Adjust for density - denser areas get smaller cells
+            var density = totalAddresses / Math.max(totalAreaMiles, 1);
+            if (density > 100) cellSizeMiles *= 0.7; // Very dense
+            else if (density > 50) cellSizeMiles *= 0.85; // Dense
+
+            return {
+                cellSizeMiles: cellSizeMiles,
+                avgNearestDist: avgNearestDist,
+                bounds: { minLat: minLat, maxLat: maxLat, minLng: minLng, maxLng: maxLng }
+            };
+        }
+
+        // Create geographic grid and assign streets to cells
+        function createGeographicGrid(streets, params) {
+            var cellSizeMiles = params.cellSizeMiles;
+            var bounds = params.bounds;
+
+            var cellLatSize = cellSizeMiles / 69;
+            var cellLngSize = cellSizeMiles / 54;
+
+            var numRows = Math.max(1, Math.ceil((bounds.maxLat - bounds.minLat) / cellLatSize));
+            var numCols = Math.max(1, Math.ceil((bounds.maxLng - bounds.minLng) / cellLngSize));
+
+            // Create empty grid
+            var grid = [];
+            for (var r = 0; r < numRows; r++) {
+                grid[r] = [];
+                for (var c = 0; c < numCols; c++) {
+                    grid[r][c] = {
+                        row: r,
+                        col: c,
+                        streets: [],
+                        work: 0,
+                        addressCount: 0,
+                        centroid: {
+                            lat: bounds.minLat + (r + 0.5) * cellLatSize,
+                            lng: bounds.minLng + (c + 0.5) * cellLngSize
+                        }
+                    };
+                }
+            }
+
+            // Assign streets to cells
+            for (var i = 0; i < streets.length; i++) {
+                var street = streets[i];
+                var row = Math.floor((street.centroid.lat - bounds.minLat) / cellLatSize);
+                var col = Math.floor((street.centroid.lng - bounds.minLng) / cellLngSize);
+                row = Math.max(0, Math.min(row, numRows - 1));
+                col = Math.max(0, Math.min(col, numCols - 1));
+                grid[row][col].streets.push(street);
+            }
+
+            // Calculate work per cell (address count)
+            for (var r = 0; r < numRows; r++) {
+                for (var c = 0; c < numCols; c++) {
+                    var cell = grid[r][c];
+                    var addresses = 0;
+                    for (var s = 0; s < cell.streets.length; s++) {
+                        addresses += cell.streets[s].addresses.length;
+                    }
+                    cell.work = addresses;
+                    cell.addressCount = addresses;
+                }
+            }
+
+            return grid;
+        }
+
+        // Assign cells to drivers based on work
+        function assignCellsToDrivers(grid, numDrivers) {
+            // 1. Flatten non-empty cells
+            var cells = [];
+            for (var r = 0; r < grid.length; r++) {
+                for (var c = 0; c < grid[r].length; c++) {
+                    if (grid[r][c].streets.length > 0) {
+                        cells.push(grid[r][c]);
+                    }
+                }
+            }
+
+            if (cells.length === 0) {
+                var empty = [];
+                for (var d = 0; d < numDrivers; d++) empty.push([]);
+                return empty;
+            }
+
+            // 2. Sort by geographic position (row-major sweep)
+            cells.sort(function(a, b) {
+                return a.row - b.row || a.col - b.col;
+            });
+
+            // 3. Calculate total work
+            var totalWork = 0;
+            for (var i = 0; i < cells.length; i++) {
+                totalWork += cells[i].work;
+            }
+            var targetWorkPerDriver = totalWork / numDrivers;
+
+            // 4. Assign cells to drivers
+            var driverCells = [];
+            for (var d = 0; d < numDrivers; d++) {
+                driverCells.push([]);
+            }
+
+            var currentDriver = 0;
+            var currentWork = 0;
+
+            for (var i = 0; i < cells.length; i++) {
+                driverCells[currentDriver].push(cells[i]);
+                currentWork += cells[i].work;
+
+                if (currentWork >= targetWorkPerDriver && currentDriver < numDrivers - 1) {
+                    currentDriver++;
+                    currentWork = 0;
+                }
+            }
+
+            return driverCells;
+        }
+
+        // Calculate centroid of a driver's cells
+        function calculateCellsCentroid(cells) {
+            if (cells.length === 0) return { lat: 0, lng: 0 };
+            var sumLat = 0, sumLng = 0;
+            for (var i = 0; i < cells.length; i++) {
+                sumLat += cells[i].centroid.lat;
+                sumLng += cells[i].centroid.lng;
+            }
+            return { lat: sumLat / cells.length, lng: sumLng / cells.length };
+        }
+
+        // Refine cell assignments by moving cells between drivers
+        function refineCellAssignments(driverCells) {
+            var numDrivers = driverCells.length;
+            var maxPasses = 30;
+
+            for (var pass = 0; pass < maxPasses; pass++) {
+                // Calculate work per driver
+                var driverWork = [];
+                var totalWork = 0;
+                for (var d = 0; d < numDrivers; d++) {
+                    var work = 0;
+                    for (var c = 0; c < driverCells[d].length; c++) {
+                        work += driverCells[d][c].work;
+                    }
+                    driverWork.push(work);
+                    totalWork += work;
+                }
+                var avgWork = totalWork / numDrivers;
+
+                // Find max and min work drivers
+                var maxDriver = 0, minDriver = 0;
+                for (var d = 0; d < numDrivers; d++) {
+                    if (driverWork[d] > driverWork[maxDriver]) maxDriver = d;
+                    if (driverWork[d] < driverWork[minDriver]) minDriver = d;
+                }
+
+                // If balanced enough (within 15%), stop
+                if (driverWork[maxDriver] - driverWork[minDriver] < avgWork * 0.15) break;
+                if (driverCells[maxDriver].length <= 1) break;
+
+                // Find cell in maxDriver closest to minDriver's centroid
+                var minCentroid = calculateCellsCentroid(driverCells[minDriver]);
+                var bestCellIdx = -1;
+                var bestDist = Infinity;
+
+                for (var c = 0; c < driverCells[maxDriver].length; c++) {
+                    var cell = driverCells[maxDriver][c];
+                    var dist = haversine(cell.centroid.lat, cell.centroid.lng,
+                                         minCentroid.lat, minCentroid.lng);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestCellIdx = c;
+                    }
+                }
+
+                if (bestCellIdx >= 0) {
+                    // Move cell from maxDriver to minDriver
+                    var cell = driverCells[maxDriver].splice(bestCellIdx, 1)[0];
+                    driverCells[minDriver].push(cell);
+                } else {
+                    break;
+                }
+            }
+
+            return driverCells;
+        }
+
+        // Convert cell assignments to driver street routes
+        function cellsToDriverRoutes(driverCells) {
+            var driverRoutes = [];
+
+            for (var d = 0; d < driverCells.length; d++) {
+                var streets = [];
+                for (var c = 0; c < driverCells[d].length; c++) {
+                    var cell = driverCells[d][c];
+                    for (var s = 0; s < cell.streets.length; s++) {
+                        streets.push(cell.streets[s]);
+                    }
+                }
+                driverRoutes.push(streets);
+            }
+
+            return driverRoutes;
+        }
+
+        // ========== END GRID-BASED FUNCTIONS ==========
+
+        // Calculate the centroid of a driver's region
+        function calculateRegionCentroid(streets) {
+            if (streets.length === 0) return { lat: 0, lng: 0 };
+            var sumLat = 0, sumLng = 0, count = 0;
+            for (var i = 0; i < streets.length; i++) {
+                sumLat += streets[i].centroid.lat;
+                sumLng += streets[i].centroid.lng;
+                count++;
+            }
+            return { lat: sumLat / count, lng: sumLng / count };
+        }
+
+        // Calculate work score for a driver's streets: stops × mileage
+        function calculateWorkScore(streets) {
+            if (streets.length === 0) return { stops: 0, mileage: 0, work: 0 };
+
+            var stops = 0;
+            var mileage = 0;
+            var sorted = sortStreetsWithinRegion(streets);
+
+            for (var i = 0; i < sorted.length; i++) {
+                stops += sorted[i].addresses.length;
+                if (i > 0) {
+                    mileage += haversine(
+                        sorted[i - 1].centroid.lat, sorted[i - 1].centroid.lng,
+                        sorted[i].centroid.lat, sorted[i].centroid.lng
+                    );
+                }
+            }
+
+            return { stops: stops, mileage: mileage, work: stops * mileage };
+        }
+
+        // Find gaps between consecutive streets in a sorted route
+        function findStreetsWithLargeGaps(streets, threshold) {
+            if (streets.length <= 1) return [];
+
+            var sorted = sortStreetsWithinRegion(streets);
+            var problemStreets = [];
+
+            for (var i = 1; i < sorted.length; i++) {
+                var prev = sorted[i - 1];
+                var curr = sorted[i];
+                var gap = haversine(prev.centroid.lat, prev.centroid.lng,
+                                    curr.centroid.lat, curr.centroid.lng);
+                if (gap > threshold) {
+                    problemStreets.push({ street: curr, gap: gap, index: i });
+                }
+            }
+
+            return problemStreets;
+        }
+
+        // Find the driver where inserting this street increases mileage the least
+        function findBestFitDriver(street, currentDriver, regionStreets, workScores, avgWork) {
+            var numDrivers = regionStreets.length;
+            var bestDriver = currentDriver;
+            var bestIncrease = Infinity;
+
+            for (var d = 0; d < numDrivers; d++) {
+                if (d === currentDriver) continue;
+                if (regionStreets[d].length === 0) continue;
+
+                // Don't overload a driver (work score must stay below average + 15%)
+                if (workScores[d].work > avgWork * 1.15) continue;
+
+                // Calculate how much mileage would increase if we add this street
+                var sorted = sortStreetsWithinRegion(regionStreets[d]);
+                var centroid = calculateRegionCentroid(regionStreets[d]);
+
+                // Simple heuristic: distance from street to region centroid
+                var increase = haversine(
+                    street.centroid.lat, street.centroid.lng,
+                    centroid.lat, centroid.lng
+                );
+
+                if (increase < bestIncrease) {
+                    bestIncrease = increase;
+                    bestDriver = d;
+                }
+            }
+
+            return bestDriver;
+        }
+
+        // Move a street from one driver to another
+        function moveStreet(street, fromDriver, toDriver, regionStreets) {
+            // Remove from source
+            for (var s = 0; s < regionStreets[fromDriver].length; s++) {
+                if (regionStreets[fromDriver][s] === street) {
+                    regionStreets[fromDriver].splice(s, 1);
+                    break;
+                }
+            }
+            // Add to destination
+            regionStreets[toDriver].push(street);
+        }
+
+        // Helper to count total addresses in regions
+        function countTotalAddresses(regionStreets) {
+            var total = 0;
+            for (var r = 0; r < regionStreets.length; r++) {
+                for (var s = 0; s < regionStreets[r].length; s++) {
+                    total += regionStreets[r][s].addresses.length;
+                }
+            }
+            return total;
+        }
+
+        // Refine route assignments with 3 phases: gaps, work balancing, best-fit
+        function refineRouteAssignments(regionStreets, targetPerDriver) {
+            var numDrivers = regionStreets.length;
+
+            // Track recently moved streets to prevent oscillation
+            var recentlyMoved = {}; // street.name -> {fromDriver, passNum}
+            var oscillationCooldown = 5; // Don't move a street back for 5 passes
+
+            // Clear and initialize debug log
+            balanceLog = [];
+            balanceLog.push('=== ROUTE BALANCING DEBUG LOG ===');
+            balanceLog.push('Timestamp: ' + new Date().toISOString());
+            balanceLog.push('Number of drivers: ' + numDrivers);
+            balanceLog.push('Target addresses per driver: ' + targetPerDriver);
+            balanceLog.push('');
+
+            // CHECKSUM: Count addresses at start
+            var initialAddressCount = countTotalAddresses(regionStreets);
+            balanceLog.push('*** CHECKSUM: Initial address count = ' + initialAddressCount + ' ***');
+            balanceLog.push('');
+
+            // Log initial work scores
+            balanceLog.push('=== INITIAL WORK SCORES ===');
+            var initialScores = [];
+            for (var r = 0; r < numDrivers; r++) {
+                var score = calculateWorkScore(regionStreets[r]);
+                initialScores.push(score);
+                balanceLog.push('Driver ' + (r + 1) + ': ' + regionStreets[r].length + ' streets, ' +
+                    score.stops + ' stops, ' + score.mileage.toFixed(1) + ' mi, work=' + Math.round(score.work));
+            }
+            balanceLog.push('');
+
+            // ========== PHASE 1: Gap-based moves ==========
+            var thresholds = [1.5, 1.0, 0.7, 0.5, 0.4, 0.3];
+
+            for (var pass = 0; pass < thresholds.length; pass++) {
+                var threshold = thresholds[pass];
+                var totalMoved = 0;
+
+                var regionCentroids = [];
+                for (var r = 0; r < numDrivers; r++) {
+                    regionCentroids.push(calculateRegionCentroid(regionStreets[r]));
+                }
+
+                for (var r = 0; r < numDrivers; r++) {
+                    if (regionStreets[r].length <= 1) continue;
+
+                    var problemStreets = findStreetsWithLargeGaps(regionStreets[r], threshold);
+
+                    for (var p = 0; p < problemStreets.length; p++) {
+                        var street = problemStreets[p].street;
+
+                        var bestDriver = r;
+                        var bestDist = haversine(street.centroid.lat, street.centroid.lng,
+                                                 regionCentroids[r].lat, regionCentroids[r].lng);
+
+                        for (var d = 0; d < numDrivers; d++) {
+                            if (d === r) continue;
+
+                            var driverStopCount = 0;
+                            for (var s = 0; s < regionStreets[d].length; s++) {
+                                driverStopCount += regionStreets[d][s].addresses.length;
+                            }
+                            if (driverStopCount > targetPerDriver * 1.2) continue;
+
+                            var dist = haversine(street.centroid.lat, street.centroid.lng,
+                                                 regionCentroids[d].lat, regionCentroids[d].lng);
+
+                            if (dist < bestDist * 0.8) {
+                                bestDist = dist;
+                                bestDriver = d;
+                            }
+                        }
+
+                        if (bestDriver !== r) {
+                            moveStreet(street, r, bestDriver, regionStreets);
+                            totalMoved++;
+                            regionCentroids[r] = calculateRegionCentroid(regionStreets[r]);
+                            regionCentroids[bestDriver] = calculateRegionCentroid(regionStreets[bestDriver]);
+                        }
+                    }
+                }
+
+                if (totalMoved === 0 && pass >= 2) break;
+            }
+
+            // CHECKSUM: Count after Phase 1
+            var phase1Count = countTotalAddresses(regionStreets);
+            balanceLog.push('*** CHECKSUM: After Phase 1 = ' + phase1Count + ' (started with ' + initialAddressCount + ') ***');
+            if (phase1Count !== initialAddressCount) {
+                balanceLog.push('*** WARNING: LOST ' + (initialAddressCount - phase1Count) + ' ADDRESSES IN PHASE 1! ***');
+            }
+            balanceLog.push('');
+
+            // ========== PHASE 2: Work score balancing ==========
+            balanceLog.push('=== PHASE 2: WORK SCORE BALANCING ===');
+            for (var balancePass = 0; balancePass < 50; balancePass++) {
+                // Calculate work scores for all drivers
+                var workScores = [];
+                var totalWork = 0;
+                for (var r = 0; r < numDrivers; r++) {
+                    var score = calculateWorkScore(regionStreets[r]);
+                    workScores.push(score);
+                    totalWork += score.work;
+                }
+                var avgWork = totalWork / numDrivers;
+
+                // Find driver with highest and lowest work
+                var maxWork = -1, minWork = Infinity;
+                var maxDriver = -1, minDriver = -1;
+                for (var r = 0; r < numDrivers; r++) {
+                    if (workScores[r].work > maxWork) {
+                        maxWork = workScores[r].work;
+                        maxDriver = r;
+                    }
+                    if (workScores[r].work < minWork) {
+                        minWork = workScores[r].work;
+                        minDriver = r;
+                    }
+                }
+
+                var imbalancePct = ((maxWork - minWork) / avgWork * 100).toFixed(1);
+
+                // If imbalance is less than 15%, we're balanced enough
+                if (maxWork - minWork < avgWork * 0.15) {
+                    balanceLog.push('Pass ' + balancePass + ': DONE - imbalance ' + imbalancePct + '% < 15% threshold');
+                    break;
+                }
+
+                // Try to move a street from high-work to low-work driver
+                if (regionStreets[maxDriver].length <= 1) {
+                    balanceLog.push('Pass ' + balancePass + ': SKIP - Driver ' + (maxDriver + 1) + ' has only ' +
+                        regionStreets[maxDriver].length + ' street(s)');
+                    continue;
+                }
+
+                var minCentroid = calculateRegionCentroid(regionStreets[minDriver]);
+                var moved = false;
+
+                // Find street in maxDriver that is closest to minDriver (excluding recently moved streets)
+                var bestStreet = null;
+                var bestDist = Infinity;
+                for (var s = 0; s < regionStreets[maxDriver].length; s++) {
+                    var street = regionStreets[maxDriver][s];
+
+                    // OSCILLATION PREVENTION: Skip streets recently moved TO this driver
+                    var moveInfo = recentlyMoved[street.name];
+                    if (moveInfo && moveInfo.toDriver === maxDriver &&
+                        (balancePass - moveInfo.passNum) < oscillationCooldown) {
+                        continue; // Skip - would cause oscillation
+                    }
+
+                    var dist = haversine(street.centroid.lat, street.centroid.lng,
+                                         minCentroid.lat, minCentroid.lng);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestStreet = street;
+                    }
+                }
+
+                // Move street - prioritize work balance over distance when very unbalanced
+                var veryUnbalanced = (maxWork - minWork) > avgWork * 0.5;
+                if (bestStreet && (veryUnbalanced || bestDist < 5.0)) {
+                    // Track this move to prevent oscillation
+                    recentlyMoved[bestStreet.name] = {
+                        fromDriver: maxDriver,
+                        toDriver: minDriver,
+                        passNum: balancePass
+                    };
+
+                    balanceLog.push('Pass ' + balancePass + ': MOVE "' + bestStreet.name + '" (' +
+                        bestStreet.addresses.length + ' addrs) from Driver ' + (maxDriver + 1) +
+                        ' (work=' + Math.round(maxWork) + ') to Driver ' + (minDriver + 1) +
+                        ' (work=' + Math.round(minWork) + '), dist=' + bestDist.toFixed(1) + ' mi, imbalance=' + imbalancePct + '%');
+                    moveStreet(bestStreet, maxDriver, minDriver, regionStreets);
+                    moved = true;
+                } else if (!bestStreet) {
+                    balanceLog.push('Pass ' + balancePass + ': NO CANDIDATES - all streets on cooldown or driver has 1 street');
+                } else {
+                    balanceLog.push('Pass ' + balancePass + ': NO MOVE - dist=' + bestDist.toFixed(1) +
+                        ' mi too far, veryUnbalanced=' + veryUnbalanced);
+                }
+
+                if (!moved) continue; // Try next pass instead of breaking
+            }
+
+            // CHECKSUM: Count after Phase 2
+            var phase2Count = countTotalAddresses(regionStreets);
+            balanceLog.push('*** CHECKSUM: After Phase 2 = ' + phase2Count + ' (started with ' + initialAddressCount + ') ***');
+            if (phase2Count !== initialAddressCount) {
+                balanceLog.push('*** WARNING: LOST ' + (initialAddressCount - phase2Count) + ' ADDRESSES IN PHASE 2! ***');
+            }
+            balanceLog.push('');
+
+            // ========== PHASE 3: Best-fit for remaining large gaps ==========
+            var workScores = [];
+            var totalWork = 0;
+            for (var r = 0; r < numDrivers; r++) {
+                var score = calculateWorkScore(regionStreets[r]);
+                workScores.push(score);
+                totalWork += score.work;
+            }
+            var avgWork = totalWork / numDrivers;
+
+            for (var r = 0; r < numDrivers; r++) {
+                if (regionStreets[r].length <= 1) continue;
+
+                var problemStreets = findStreetsWithLargeGaps(regionStreets[r], 0.5);
+
+                for (var p = 0; p < problemStreets.length; p++) {
+                    var street = problemStreets[p].street;
+                    var bestDriver = findBestFitDriver(street, r, regionStreets, workScores, avgWork);
+
+                    if (bestDriver !== r) {
+                        moveStreet(street, r, bestDriver, regionStreets);
+                        // Update work scores
+                        workScores[r] = calculateWorkScore(regionStreets[r]);
+                        workScores[bestDriver] = calculateWorkScore(regionStreets[bestDriver]);
+                    }
+                }
+            }
+
+            // CHECKSUM: Count after Phase 3
+            var phase3Count = countTotalAddresses(regionStreets);
+            balanceLog.push('*** CHECKSUM: After Phase 3 = ' + phase3Count + ' (started with ' + initialAddressCount + ') ***');
+            if (phase3Count !== initialAddressCount) {
+                balanceLog.push('*** WARNING: LOST ' + (initialAddressCount - phase3Count) + ' ADDRESSES IN PHASE 3! ***');
+            }
+            balanceLog.push('');
+
+            // Log final work scores
+            balanceLog.push('=== FINAL WORK SCORES ===');
+            var finalMin = Infinity, finalMax = -1, finalTotal = 0;
+            var finalStops = 0;
+            for (var r = 0; r < numDrivers; r++) {
+                var score = calculateWorkScore(regionStreets[r]);
+                finalTotal += score.work;
+                finalStops += score.stops;
+                if (score.work < finalMin) finalMin = score.work;
+                if (score.work > finalMax) finalMax = score.work;
+                balanceLog.push('Driver ' + (r + 1) + ': ' + regionStreets[r].length + ' streets, ' +
+                    score.stops + ' stops, ' + score.mileage.toFixed(1) + ' mi, work=' + Math.round(score.work));
+            }
+            var finalAvg = finalTotal / numDrivers;
+            balanceLog.push('');
+            balanceLog.push('SUMMARY: min=' + Math.round(finalMin) + ', max=' + Math.round(finalMax) +
+                ', avg=' + Math.round(finalAvg) + ', spread=' + ((finalMax - finalMin) / finalAvg * 100).toFixed(1) + '%');
+
+            // Final checksum summary
+            balanceLog.push('');
+            balanceLog.push('*** FINAL CHECKSUM: ' + finalStops + ' stops (started with ' + initialAddressCount + ') ***');
+            if (finalStops !== initialAddressCount) {
+                balanceLog.push('*** ERROR: MISMATCH! LOST ' + (initialAddressCount - finalStops) + ' ADDRESSES! ***');
+            } else {
+                balanceLog.push('*** CHECKSUM OK: All addresses accounted for ***');
+            }
+
+            return regionStreets;
+        }
+
+        // Post-route balancing: move addresses between drivers to balance actual work (stops × miles)
+        function balanceActualWork(clusters) {
+            var numDrivers = clusters.length;
+            var maxPasses = 100;
+
+            for (var pass = 0; pass < maxPasses; pass++) {
+                // Calculate actual work for each driver
+                var workScores = [];
+                var totalWork = 0;
+                for (var i = 0; i < numDrivers; i++) {
+                    var stops = clusters[i].length;
+                    var miles = clusters[i].totalMiles || 0;
+                    var work = stops * miles;
+                    workScores.push({ stops: stops, miles: miles, work: work });
+                    totalWork += work;
+                }
+                var avgWork = totalWork / numDrivers;
+
+                // Find max and min work drivers
+                var maxWork = -1, minWork = Infinity;
+                var maxDriver = -1, minDriver = -1;
+                for (var i = 0; i < numDrivers; i++) {
+                    if (workScores[i].work > maxWork) {
+                        maxWork = workScores[i].work;
+                        maxDriver = i;
+                    }
+                    if (workScores[i].work < minWork) {
+                        minWork = workScores[i].work;
+                        minDriver = i;
+                    }
+                }
+
+                var imbalancePct = ((maxWork - minWork) / avgWork * 100);
+
+                // Stop if balanced enough (within 30%)
+                if (imbalancePct < 30) {
+                    balanceLog.push('Pass ' + pass + ': DONE - imbalance ' + imbalancePct.toFixed(1) + '% < 30% threshold');
+                    break;
+                }
+
+                // Don't move if max driver has too few addresses
+                if (clusters[maxDriver].length <= 10) {
+                    balanceLog.push('Pass ' + pass + ': SKIP - Driver ' + (maxDriver + 1) + ' has only ' + clusters[maxDriver].length + ' addresses');
+                    continue;
+                }
+
+                // Find addresses in max driver that are closest to min driver's centroid
+                var minCentroid = calculateCentroid(clusters[minDriver]);
+                var maxCentroid = calculateCentroid(clusters[maxDriver]);
+
+                // Find addresses on the edge of max driver's region (closest to min driver)
+                var candidates = [];
+                for (var a = 0; a < clusters[maxDriver].length; a++) {
+                    var addr = clusters[maxDriver][a];
+                    var distToMin = haversine(addr.lat, addr.lng, minCentroid.lat, minCentroid.lng);
+                    var distToMax = haversine(addr.lat, addr.lng, maxCentroid.lat, maxCentroid.lng);
+                    // Only consider addresses closer to min than to max centroid
+                    if (distToMin < distToMax * 1.5) {
+                        candidates.push({ addr: addr, idx: a, dist: distToMin });
+                    }
+                }
+
+                if (candidates.length === 0) {
+                    balanceLog.push('Pass ' + pass + ': NO CANDIDATES - no addresses close to Driver ' + (minDriver + 1));
+                    break;
+                }
+
+                // Sort by distance to min driver
+                candidates.sort(function(a, b) { return a.dist - b.dist; });
+
+                // Move the closest address
+                var toMove = candidates[0];
+                var addr = clusters[maxDriver].splice(toMove.idx, 1)[0];
+                clusters[minDriver].push(addr);
+
+                // Recalculate mileage for affected clusters
+                clusters[maxDriver] = orderClusterToDropoff(clusters[maxDriver]);
+                clusters[minDriver] = orderClusterToDropoff(clusters[minDriver]);
+                calculateClusterMileage(clusters[maxDriver]);
+                calculateClusterMileage(clusters[minDriver]);
+
+                balanceLog.push('Pass ' + pass + ': MOVE addr from Driver ' + (maxDriver + 1) +
+                    ' (work=' + Math.round(maxWork) + ') to Driver ' + (minDriver + 1) +
+                    ' (work=' + Math.round(minWork) + '), imbalance=' + imbalancePct.toFixed(1) + '%');
+            }
+
+            return clusters;
+        }
+
+        // Grid-based fallback distribution
+        function distributeStreetsToDriversGrid(sortedStreets, numDrivers) {
+            // ========== GRID-BASED PIPELINE ==========
+
+            // Step 1: Calculate grid parameters based on work
+            var gridParams = calculateGridParameters(sortedStreets, numDrivers);
+            console.log('Grid params:', gridParams.cellSizeMiles.toFixed(2), 'mile cells');
+
+            // Step 2: Create geographic grid and assign streets to cells
+            var grid = createGeographicGrid(sortedStreets, gridParams);
+
+            // Step 3: Assign cells to drivers based on work
+            var driverCells = assignCellsToDrivers(grid, numDrivers);
+
+            // Step 4: Refine cell assignments to balance work
+            driverCells = refineCellAssignments(driverCells);
+
+            // Step 5: Convert cells to street lists
+            var regionStreets = cellsToDriverRoutes(driverCells);
+
+            // Step 6: Convert region streets to driver clusters
+            var driverClusters = [];
+            for (var r = 0; r < numDrivers; r++) {
+                var regionSorted = sortStreetsWithinRegion(regionStreets[r]);
+
+                var cluster = [];
+                for (var s = 0; s < regionSorted.length; s++) {
+                    var street = regionSorted[s];
+                    var sortedAddresses = sortAddressesWithinStreet(street.addresses);
+                    for (var a = 0; a < sortedAddresses.length; a++) {
+                        cluster.push(sortedAddresses[a]);
+                    }
+                }
+                driverClusters.push(cluster);
+            }
+
+            return driverClusters;
+        }
+
+        // Main distribution function - tries road-based first, falls back to grid
+        function distributeStreetsToDrivers(sortedStreets, numDrivers) {
+            // For now, use grid-based (synchronous)
+            // Road-based is async and called separately via distributeStreetsWithRoads
+            return distributeStreetsToDriversGrid(sortedStreets, numDrivers);
+        }
+
+        // Async version that tries road-based first
+        function distributeStreetsWithRoads(sortedStreets, numDrivers, callback) {
+            // Calculate bounds for road fetch
+            var minLat = Infinity, maxLat = -Infinity;
+            var minLng = Infinity, maxLng = -Infinity;
+            for (var i = 0; i < sortedStreets.length; i++) {
+                var c = sortedStreets[i].centroid;
+                if (c.lat < minLat) minLat = c.lat;
+                if (c.lat > maxLat) maxLat = c.lat;
+                if (c.lng < minLng) minLng = c.lng;
+                if (c.lng > maxLng) maxLng = c.lng;
+            }
+
+            // Add small buffer to bounds
+            var buffer = 0.01; // ~0.5 miles
+            var bounds = {
+                minLat: minLat - buffer,
+                maxLat: maxLat + buffer,
+                minLng: minLng - buffer,
+                maxLng: maxLng + buffer
+            };
+
+            console.log('Using address-level proximity fill...');
+
+            // Flatten streets to addresses
+            var allAddresses = [];
+            for (var i = 0; i < sortedStreets.length; i++) {
+                var street = sortedStreets[i];
+                for (var a = 0; a < street.addresses.length; a++) {
+                    allAddresses.push(street.addresses[a]);
+                }
+            }
+            console.log('Total addresses to distribute:', allAddresses.length);
+
+            // Use dropoff as start point
+            var startPoint = { lat: dropoff.lat, lng: dropoff.lng };
+
+            // Use the new address-level proximity fill
+            distributeByProximityFill(allAddresses, numDrivers, startPoint, function(result) {
+                console.log('Address-level proximity fill complete');
+                callback(result);
+            });
         }
 
         // Balance clusters to respect min/max constraints
@@ -1030,75 +3253,138 @@
         }
         
         function initSingleDriverMap(driverIndex) {
-            if (!window.google || !window.google.maps) return;
             if (driverMaps[driverIndex]) return;
 
             var mapEl = document.getElementById('driver-map-' + driverIndex);
-            // Check element exists AND is visible (has layout)
             if (!mapEl || !mapEl.offsetParent) return;
-            
+
             var cluster = clusters[driverIndex];
             if (!cluster || cluster.length === 0) {
                 mapEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;">No addresses</div>';
                 return;
             }
-            
-            var bounds = new google.maps.LatLngBounds();
+
+            // Create Leaflet map
+            var map = L.map(mapEl);
+
+            // Add OpenStreetMap tiles (free, no API key)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // Build bounds
+            var bounds = L.latLngBounds();
             for (var i = 0; i < cluster.length; i++) {
-                bounds.extend({ lat: cluster[i].lat, lng: cluster[i].lng });
+                bounds.extend([cluster[i].lat, cluster[i].lng]);
             }
-            bounds.extend({ lat: dropoff.lat, lng: dropoff.lng });
-            
-            var map = new google.maps.Map(mapEl, {
-                center: bounds.getCenter(),
-                zoom: 12
-            });
-            map.fitBounds(bounds);
-            
+            bounds.extend([dropoff.lat, dropoff.lng]);
+            map.fitBounds(bounds, { padding: [20, 20] });
+
             // Add numbered markers for addresses
             for (var i = 0; i < cluster.length; i++) {
                 var addr = cluster[i];
-                new google.maps.Marker({
-                    position: { lat: addr.lat, lng: addr.lng },
-                    map: map,
-                    label: { text: String(i + 1), color: 'white', fontSize: '11px', fontWeight: 'bold' },
-                    icon: {
-                        path: google.maps.SymbolPath.CIRCLE,
-                        fillColor: '#E87C1E',
-                        fillOpacity: 1,
-                        strokeWeight: 2,
-                        strokeColor: 'white',
-                        scale: 14
-                    },
-                    title: (i + 1) + '. ' + addr.fullAddress
-                });
+                var marker = L.marker([addr.lat, addr.lng], {
+                    icon: L.divIcon({
+                        className: 'custom-marker',
+                        html: '<div style="background:#E87C1E;color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.3);">' + (i + 1) + '</div>',
+                        iconSize: [24, 24],
+                        iconAnchor: [12, 12]
+                    })
+                }).addTo(map);
+                marker.bindPopup((i + 1) + '. ' + addr.fullAddress);
             }
-            
-            // Add dropoff marker (green)
-            new google.maps.Marker({
-                position: { lat: dropoff.lat, lng: dropoff.lng },
-                map: map,
-                label: { text: '🏁', fontSize: '16px' },
-                title: 'DROP-OFF: ' + dropoff.address
-            });
-            
-            // Draw route line
-            var path = [];
+
+            // Add dropoff marker
+            L.marker([dropoff.lat, dropoff.lng], {
+                icon: L.divIcon({
+                    className: 'dropoff-marker',
+                    html: '<div style="font-size:20px;">🏁</div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                })
+            }).addTo(map).bindPopup('DROP-OFF: ' + dropoff.address);
+
+            // Draw straight line first as fallback (stops only, no return to dropoff)
+            var straightLatlngs = [];
             for (var i = 0; i < cluster.length; i++) {
-                path.push({ lat: cluster[i].lat, lng: cluster[i].lng });
+                straightLatlngs.push([cluster[i].lat, cluster[i].lng]);
             }
-            path.push({ lat: dropoff.lat, lng: dropoff.lng });
-            
-            new google.maps.Polyline({
-                path: path,
-                geodesic: true,
-                strokeColor: '#E87C1E',
-                strokeOpacity: 0.7,
-                strokeWeight: 3,
-                map: map
+
+            var straightLine = L.polyline(straightLatlngs, {
+                color: '#E87C1E',
+                weight: 2,
+                opacity: 0.3,
+                dashArray: '5, 10'
+            }).addTo(map);
+
+            // Try to get actual driving route from OSRM (stops only, no return to dropoff)
+            fetchOSRMRoute(cluster, null, function(routeCoords) {
+                if (routeCoords && routeCoords.length > 0) {
+                    // Remove straight line and add actual route
+                    map.removeLayer(straightLine);
+                    L.polyline(routeCoords, {
+                        color: '#E87C1E',
+                        weight: 4,
+                        opacity: 0.8
+                    }).addTo(map);
+                }
             });
-            
+
             driverMaps[driverIndex] = map;
+        }
+
+        // Fetch driving route from OSRM (free, no API key)
+        // If dropoffPoint is null, only route through stops (no return trip)
+        function fetchOSRMRoute(cluster, dropoffPoint, callback) {
+            if (cluster.length === 0) {
+                callback(null);
+                return;
+            }
+
+            // Build coordinates string for OSRM
+            // Limit to ~25 waypoints due to OSRM URL length limits
+            var waypoints = [];
+            var step = Math.max(1, Math.floor(cluster.length / 24));
+            for (var i = 0; i < cluster.length; i += step) {
+                waypoints.push(cluster[i].lng + ',' + cluster[i].lat);
+            }
+            // Always include last address
+            if (waypoints.length > 0) {
+                var lastAddr = cluster[cluster.length - 1];
+                var lastWp = lastAddr.lng + ',' + lastAddr.lat;
+                if (waypoints[waypoints.length - 1] !== lastWp) {
+                    waypoints.push(lastWp);
+                }
+            }
+            // Only add dropoff if provided (for return trip)
+            if (dropoffPoint) {
+                waypoints.push(dropoffPoint.lng + ',' + dropoffPoint.lat);
+            }
+
+            // Need at least 2 waypoints for a route
+            if (waypoints.length < 2) {
+                callback(null);
+                return;
+            }
+
+            var coordsStr = waypoints.join(';');
+            var url = 'https://router.project-osrm.org/route/v1/driving/' + coordsStr + '?overview=full&geometries=geojson';
+
+            fetch(url)
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    if (data.code === 'Ok' && data.routes && data.routes[0]) {
+                        var coords = data.routes[0].geometry.coordinates;
+                        // Convert [lng, lat] to [lat, lng] for Leaflet
+                        var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+                        callback(latlngs);
+                    } else {
+                        callback(null);
+                    }
+                })
+                .catch(function() {
+                    callback(null);
+                });
         }
 
         // Color palette for routes
@@ -1114,95 +3400,118 @@
         var summaryMarkers = [];
 
         function initSummaryMap() {
-            if (!window.google || !window.google.maps) return;
             if (!summaryMapEl) return;
 
-            // Clear previous
+            // Clear previous map if exists
+            if (summaryMap) {
+                summaryMap.remove();
+            }
             summaryPolylines = [];
             summaryMarkers = [];
 
-            var bounds = new google.maps.LatLngBounds();
+            // Create Leaflet map
+            summaryMap = L.map(summaryMapEl);
 
-            // Add all addresses to bounds
+            // Add OpenStreetMap tiles (free, no API key)
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(summaryMap);
+
+            // Build bounds
+            var bounds = L.latLngBounds();
             for (var i = 0; i < clusters.length; i++) {
                 for (var j = 0; j < clusters[i].length; j++) {
-                    bounds.extend({ lat: clusters[i][j].lat, lng: clusters[i][j].lng });
+                    bounds.extend([clusters[i][j].lat, clusters[i][j].lng]);
                 }
             }
-            bounds.extend({ lat: dropoff.lat, lng: dropoff.lng });
+            bounds.extend([dropoff.lat, dropoff.lng]);
+            summaryMap.fitBounds(bounds, { padding: [20, 20] });
 
-            summaryMap = new google.maps.Map(summaryMapEl, {
-                center: bounds.getCenter(),
-                zoom: 12
-            });
-            summaryMap.fitBounds(bounds);
-
-            // Draw each driver's route with a different color
+            // Draw each driver's route with a different color (no return to dropoff)
             for (var i = 0; i < clusters.length; i++) {
                 var cluster = clusters[i];
                 if (cluster.length === 0) continue;
 
                 var color = routeColors[i % routeColors.length];
 
-                // Draw route line
-                var path = [];
+                // Draw full connecting line through all stops
+                var latlngs = [];
                 for (var j = 0; j < cluster.length; j++) {
-                    path.push({ lat: cluster[j].lat, lng: cluster[j].lng });
+                    latlngs.push([cluster[j].lat, cluster[j].lng]);
                 }
-                path.push({ lat: dropoff.lat, lng: dropoff.lng });
 
-                var polyline = new google.maps.Polyline({
-                    path: path,
-                    geodesic: true,
-                    strokeColor: color,
-                    strokeOpacity: 0.8,
-                    strokeWeight: 3,
-                    map: summaryMap
-                });
-                summaryPolylines.push({ line: polyline, driverIndex: i });
-
-                // Add start marker for each route
-                if (cluster.length > 0) {
-                    var marker = new google.maps.Marker({
-                        position: { lat: cluster[0].lat, lng: cluster[0].lng },
-                        map: summaryMap,
-                        label: { text: String(i + 1), color: 'white', fontSize: '10px', fontWeight: 'bold' },
-                        icon: {
-                            path: google.maps.SymbolPath.CIRCLE,
-                            fillColor: color,
-                            fillOpacity: 1,
-                            strokeWeight: 2,
-                            strokeColor: 'white',
-                            scale: 12
-                        },
-                        title: drivers[i].name + ' - ' + cluster.length + ' stops'
-                    });
-                    summaryMarkers.push({ marker: marker, driverIndex: i });
+                var polyline = null;
+                if (latlngs.length > 1) {
+                    polyline = L.polyline(latlngs, {
+                        color: color,
+                        weight: 3,
+                        opacity: 0.8
+                    }).addTo(summaryMap);
+                } else {
+                    // Fallback empty polyline
+                    polyline = L.polyline([], { color: color, weight: 3, opacity: 0.8 }).addTo(summaryMap);
                 }
+                summaryPolylines.push({ line: polyline, driverIndex: i, color: color });
+
+                // Calculate center of mass for driver number placement
+                var centerLat = 0, centerLng = 0;
+                for (var j = 0; j < cluster.length; j++) {
+                    centerLat += cluster[j].lat;
+                    centerLng += cluster[j].lng;
+                }
+                centerLat /= cluster.length;
+                centerLng /= cluster.length;
+
+                // Add driver number marker at center of mass
+                var marker = L.marker([centerLat, centerLng], {
+                    icon: L.divIcon({
+                        className: 'summary-marker',
+                        html: '<div style="background:' + color + ';color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:bold;border:3px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.3);">' + (i + 1) + '</div>',
+                        iconSize: [28, 28],
+                        iconAnchor: [14, 14]
+                    })
+                }).addTo(summaryMap);
+                marker.bindPopup(drivers[i].name + ' - ' + cluster.length + ' stops');
+                summaryMarkers.push({ marker: marker, driverIndex: i });
             }
 
             // Add dropoff marker
-            new google.maps.Marker({
-                position: { lat: dropoff.lat, lng: dropoff.lng },
-                map: summaryMap,
-                label: { text: '🏁', fontSize: '16px' },
-                title: 'DROP-OFF: ' + dropoff.address
-            });
+            L.marker([dropoff.lat, dropoff.lng], {
+                icon: L.divIcon({
+                    className: 'dropoff-marker',
+                    html: '<div style="font-size:20px;">🏁</div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                })
+            }).addTo(summaryMap).bindPopup('DROP-OFF: ' + dropoff.address);
 
             // Build legend
             buildSummaryLegend();
         }
 
+        var highlightedDriver = -1; // -1 means all visible
+
         function buildSummaryLegend() {
             if (!summaryLegendEl) return;
 
             var html = '';
+
+            // "Show All" button first
+            html += '<div class="legend-item legend-all active" data-driver="-1" style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#E87C1E;color:white;border-radius:6px;cursor:pointer;border:2px solid #E87C1E;transition:all 0.2s;font-weight:600;">';
+            html += '<span style="font-size:1rem;">👁</span>';
+            html += '<span style="font-size:0.85rem;">Show All</span>';
+            html += '</div>';
+
+            // Driver items
             for (var i = 0; i < clusters.length; i++) {
                 if (clusters[i].length === 0) continue;
                 var color = routeColors[i % routeColors.length];
+                var miles = (clusters[i].totalMiles || 0).toFixed(1);
+                var workScore = Math.round(clusters[i].length * parseFloat(miles));
                 html += '<div class="legend-item" data-driver="' + i + '" style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#f5f5f5;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:all 0.2s;">';
-                html += '<span style="width:14px;height:14px;border-radius:50%;background:' + color + ';"></span>';
-                html += '<span style="font-size:0.85rem;">' + escapeHtml(drivers[i].name) + ' (' + clusters[i].length + ')</span>';
+                html += '<span style="width:14px;height:14px;border-radius:50%;background:' + color + ';flex-shrink:0;"></span>';
+                html += '<span style="font-size:0.85rem;white-space:nowrap;">' + escapeHtml(drivers[i].name) + '</span>';
+                html += '<span style="font-size:0.75rem;color:#888;">(' + clusters[i].length + ' stops, ' + miles + ' mi, ' + workScore + ')</span>';
                 html += '</div>';
             }
             summaryLegendEl.innerHTML = html;
@@ -1212,44 +3521,79 @@
             for (var l = 0; l < legendItems.length; l++) {
                 legendItems[l].addEventListener('click', function() {
                     var driverIdx = parseInt(this.getAttribute('data-driver'));
-                    highlightRoute(driverIdx, this);
+                    toggleRouteHighlight(driverIdx);
                 });
             }
         }
 
-        function highlightRoute(driverIndex, legendEl) {
-            // Reset all routes
+        function toggleRouteHighlight(driverIndex) {
+            // If clicking the same driver, or clicking "All", show all
+            if (driverIndex === -1 || driverIndex === highlightedDriver) {
+                highlightedDriver = -1;
+                showAllRoutes();
+            } else {
+                highlightedDriver = driverIndex;
+                highlightSingleRoute(driverIndex);
+            }
+            updateLegendStyles();
+        }
+
+        function showAllRoutes() {
+            // Show all routes at normal opacity
             for (var i = 0; i < summaryPolylines.length; i++) {
-                var isHighlighted = summaryPolylines[i].driverIndex === driverIndex;
-                summaryPolylines[i].line.setOptions({
-                    strokeOpacity: isHighlighted ? 1 : 0.3,
-                    strokeWeight: isHighlighted ? 5 : 2
+                summaryPolylines[i].line.setStyle({
+                    opacity: 0.8,
+                    weight: 3
                 });
             }
+            for (var i = 0; i < summaryMarkers.length; i++) {
+                summaryMarkers[i].marker.setOpacity(1);
+            }
+        }
 
-            // Reset all markers
+        function highlightSingleRoute(driverIndex) {
+            // Highlight only selected route
+            for (var i = 0; i < summaryPolylines.length; i++) {
+                var isHighlighted = summaryPolylines[i].driverIndex === driverIndex;
+                summaryPolylines[i].line.setStyle({
+                    opacity: isHighlighted ? 1 : 0.15,
+                    weight: isHighlighted ? 5 : 2
+                });
+                if (isHighlighted) {
+                    summaryPolylines[i].line.bringToFront();
+                }
+            }
             for (var i = 0; i < summaryMarkers.length; i++) {
                 var isHighlighted = summaryMarkers[i].driverIndex === driverIndex;
-                summaryMarkers[i].marker.setOpacity(isHighlighted ? 1 : 0.5);
+                summaryMarkers[i].marker.setOpacity(isHighlighted ? 1 : 0.3);
             }
+        }
 
-            // Update legend styling
+        function updateLegendStyles() {
             var allLegendItems = summaryLegendEl.querySelectorAll('.legend-item');
             for (var i = 0; i < allLegendItems.length; i++) {
                 var idx = parseInt(allLegendItems[i].getAttribute('data-driver'));
-                if (idx === driverIndex) {
+                var isAllBtn = idx === -1;
+                var isSelected = idx === highlightedDriver;
+
+                if (isAllBtn) {
+                    // "Show All" button styling
+                    if (highlightedDriver === -1) {
+                        allLegendItems[i].style.background = '#E87C1E';
+                        allLegendItems[i].style.color = 'white';
+                        allLegendItems[i].style.borderColor = '#E87C1E';
+                    } else {
+                        allLegendItems[i].style.background = '#f5f5f5';
+                        allLegendItems[i].style.color = '#333';
+                        allLegendItems[i].style.borderColor = 'transparent';
+                    }
+                } else if (isSelected) {
                     allLegendItems[i].style.borderColor = routeColors[idx % routeColors.length];
                     allLegendItems[i].style.background = '#fff';
                 } else {
                     allLegendItems[i].style.borderColor = 'transparent';
-                    allLegendItems[i].style.background = '#f5f5f5';
+                    allLegendItems[i].style.background = highlightedDriver === -1 ? '#f5f5f5' : '#eee';
                 }
-            }
-
-            // Scroll to driver card
-            var driverCard = document.querySelector('.driver-header[data-index="' + driverIndex + '"]');
-            if (driverCard) {
-                driverCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
         }
 
@@ -1293,100 +3637,96 @@
         function generateDriverHtml(index) {
             var cluster = clusters[index];
             var driver = drivers[index];
-            var apiKey = apiKeyInput.value.trim();
             var miles = (cluster.totalMiles || 0).toFixed(1);
-            var groupByStreet = groupByStreetCheckbox && groupByStreetCheckbox.checked;
+
+            // Always group by street with collapsible sections
+            var streetGroups = [];
+            var currentStreet = '';
+            var currentGroup = null;
+
+            for (var j = 0; j < cluster.length; j++) {
+                var addr = cluster[j];
+                addr.originalIndex = j + 1; // Store 1-based index
+                var streetName = getStreetName(addr.address);
+
+                if (streetName !== currentStreet) {
+                    currentStreet = streetName;
+                    currentGroup = { street: streetName, addresses: [] };
+                    streetGroups.push(currentGroup);
+                }
+                currentGroup.addresses.push(addr);
+            }
 
             var addressListHtml = '';
 
-            // Street View Static API URL helper
-            function getStreetViewUrl(lat, lng, apiKey) {
-                return 'https://maps.googleapis.com/maps/api/streetview?size=80x60&location=' + lat + ',' + lng + '&key=' + apiKey;
-            }
+            for (var g = 0; g < streetGroups.length; g++) {
+                var group = streetGroups[g];
+                var groupId = 'street-' + g;
+                var addressCount = group.addresses.length;
+                var firstIdx = group.addresses[0].originalIndex;
+                var lastIdx = group.addresses[addressCount - 1].originalIndex;
+                var rangeStr = addressCount === 1 ? '#' + firstIdx : '#' + firstIdx + '-' + lastIdx;
 
-            if (groupByStreet && cluster.length > 0) {
-                // Group consecutive addresses by street
-                var currentStreet = '';
-                var streetCount = 0;
+                // Street header (clickable to expand/collapse)
+                addressListHtml += '<div class="street-header" onclick="toggleStreet(\'' + groupId + '\')" style="background:#f5f5f5;padding:12px 15px;margin:10px 0 0 0;border-radius:8px;border-left:4px solid #E87C1E;cursor:pointer;display:flex;justify-content:space-between;align-items:center;">';
+                addressListHtml += '<div><strong style="color:#333;">' + escapeHtml(group.street) + '</strong>';
+                addressListHtml += '<span style="margin-left:10px;color:#888;font-size:0.85rem;">(' + addressCount + ' stop' + (addressCount > 1 ? 's' : '') + ', ' + rangeStr + ')</span></div>';
+                addressListHtml += '<span class="expand-icon" id="icon-' + groupId + '" style="font-size:1.2rem;transition:transform 0.2s;">▶</span>';
+                addressListHtml += '</div>';
 
-                for (var j = 0; j < cluster.length; j++) {
-                    var addr = cluster[j];
-                    var streetName = getStreetName(addr.address);
+                // Collapsible address list (hidden by default)
+                addressListHtml += '<div class="street-addresses" id="' + groupId + '" style="display:none;border-left:4px solid #eee;margin-left:15px;">';
 
-                    if (streetName !== currentStreet) {
-                        // New street header
-                        currentStreet = streetName;
-                        streetCount++;
-                        addressListHtml += '<div style="background:#f5f5f5;padding:10px 15px;margin:15px 0 5px 0;border-radius:8px;border-left:4px solid #E87C1E;">';
-                        addressListHtml += '<strong style="color:#333;">' + escapeHtml(currentStreet) + '</strong>';
-                        addressListHtml += '</div>';
-                    }
-
-                    addressListHtml += '<div class="address-item" style="display:flex;align-items:center;padding:12px 0;border-bottom:1px solid #eee;margin-left:15px;gap:10px;">';
+                for (var a = 0; a < group.addresses.length; a++) {
+                    var addr = group.addresses[a];
+                    addressListHtml += '<div class="address-item" style="display:flex;align-items:center;padding:10px 15px;border-bottom:1px solid #eee;gap:10px;">';
                     addressListHtml += '<input type="checkbox" class="print-check">';
-                    if (apiKey) {
-                        addressListHtml += '<img src="' + getStreetViewUrl(addr.lat, addr.lng, apiKey) + '" style="width:80px;height:60px;border-radius:4px;object-fit:cover;" loading="lazy" alt="Street view">';
-                    }
-                    addressListHtml += '<span style="min-width:40px;color:#E87C1E;font-weight:600;">' + (j + 1) + '.</span>';
+                    addressListHtml += '<span style="min-width:35px;color:#E87C1E;font-weight:600;">' + addr.originalIndex + '.</span>';
                     addressListHtml += '<span style="flex:1;">' + escapeHtml(addr.fullAddress) + '</span>';
-                    addressListHtml += '<a href="' + getMapsLink(addr) + '" target="_blank" style="margin-left:10px;color:#E87C1E;text-decoration:none;padding:5px 10px;background:#fff8f0;border-radius:5px;">Navigate ↗</a>';
+                    addressListHtml += '<a href="' + getMapsLink(addr) + '" target="_blank" style="color:#E87C1E;text-decoration:none;padding:5px 10px;background:#fff8f0;border-radius:5px;font-size:0.9rem;">Navigate ↗</a>';
                     addressListHtml += '</div>';
                 }
-            } else {
-                // Standard list without grouping
-                for (var j = 0; j < cluster.length; j++) {
-                    var addr = cluster[j];
-                    addressListHtml += '<div class="address-item" style="display:flex;align-items:center;padding:12px 0;border-bottom:1px solid #eee;gap:10px;">';
-                    addressListHtml += '<input type="checkbox" class="print-check">';
-                    if (apiKey) {
-                        addressListHtml += '<img src="' + getStreetViewUrl(addr.lat, addr.lng, apiKey) + '" style="width:80px;height:60px;border-radius:4px;object-fit:cover;" loading="lazy" alt="Street view">';
-                    }
-                    addressListHtml += '<span style="min-width:40px;color:#E87C1E;font-weight:600;">' + (j + 1) + '.</span>';
-                    addressListHtml += '<span style="flex:1;">' + escapeHtml(addr.fullAddress) + '</span>';
-                    addressListHtml += '<a href="' + getMapsLink(addr) + '" target="_blank" style="margin-left:10px;color:#E87C1E;text-decoration:none;padding:5px 10px;background:#fff8f0;border-radius:5px;">Navigate ↗</a>';
-                    addressListHtml += '</div>';
-                }
+
+                addressListHtml += '</div>';
             }
 
             // Dropoff
-            addressListHtml += '<div style="display:flex;align-items:center;padding:12px;background:#e8f5e9;border-radius:5px;margin-top:10px;">';
+            addressListHtml += '<div style="display:flex;align-items:center;padding:12px;background:#e8f5e9;border-radius:5px;margin-top:15px;">';
             addressListHtml += '<span style="min-width:40px;color:#2e7d32;font-weight:600;">END</span>';
             addressListHtml += '<span style="flex:1;">🏁 ' + escapeHtml(dropoff.address) + ' (Drop-off)</span>';
-            addressListHtml += '<a href="' + getMapsLink(dropoff) + '" target="_blank" style="margin-left:10px;color:#2e7d32;text-decoration:none;padding:5px 10px;background:#c8e6c9;border-radius:5px;">Navigate ↗</a>';
+            addressListHtml += '<a href="' + getMapsLink(dropoff) + '" target="_blank" style="color:#2e7d32;text-decoration:none;padding:5px 10px;background:#c8e6c9;border-radius:5px;">Navigate ↗</a>';
             addressListHtml += '</div>';
-            
+
+            // Build Leaflet map JavaScript (free, no API key)
             var markersJs = '';
             for (var i = 0; i < cluster.length; i++) {
                 var a = cluster[i];
-                markersJs += 'new google.maps.Marker({position:{lat:' + a.lat + ',lng:' + a.lng + '},map:map,';
-                markersJs += 'label:{text:"' + (i+1) + '",color:"white",fontSize:"11px",fontWeight:"bold"},';
-                markersJs += 'icon:{path:google.maps.SymbolPath.CIRCLE,fillColor:"#E87C1E",fillOpacity:1,strokeWeight:2,strokeColor:"white",scale:14}';
-                markersJs += '});\n';
+                markersJs += 'L.marker([' + a.lat + ',' + a.lng + '],{icon:L.divIcon({className:"m",html:\'<div style="background:#E87C1E;color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;border:2px solid white;">' + (i+1) + '</div>\',iconSize:[24,24],iconAnchor:[12,12]})}).addTo(map);\n';
             }
             // Dropoff marker
-            markersJs += 'new google.maps.Marker({position:{lat:' + dropoff.lat + ',lng:' + dropoff.lng + '},map:map,';
-            markersJs += 'label:{text:"🏁",fontSize:"16px"},title:"DROP-OFF"});\n';
-            
-            var pathJs = 'var path=[';
+            markersJs += 'L.marker([' + dropoff.lat + ',' + dropoff.lng + '],{icon:L.divIcon({className:"d",html:\'<div style="font-size:20px;">🏁</div>\',iconSize:[24,24],iconAnchor:[12,12]})}).addTo(map);\n';
+
+            var pathJs = 'var latlngs=[';
             for (var i = 0; i < cluster.length; i++) {
                 if (i > 0) pathJs += ',';
-                pathJs += '{lat:' + cluster[i].lat + ',lng:' + cluster[i].lng + '}';
+                pathJs += '[' + cluster[i].lat + ',' + cluster[i].lng + ']';
             }
-            pathJs += ',{lat:' + dropoff.lat + ',lng:' + dropoff.lng + '}];\n';
-            pathJs += 'new google.maps.Polyline({path:path,geodesic:true,strokeColor:"#E87C1E",strokeOpacity:0.7,strokeWeight:3,map:map});\n';
-            
-            var boundsJs = 'var bounds=new google.maps.LatLngBounds();\n';
+            pathJs += ',[' + dropoff.lat + ',' + dropoff.lng + ']];\n';
+            pathJs += 'L.polyline(latlngs,{color:"#E87C1E",weight:3,opacity:0.7}).addTo(map);\n';
+
+            var boundsJs = 'var bounds=L.latLngBounds();\n';
             for (var i = 0; i < cluster.length; i++) {
-                boundsJs += 'bounds.extend({lat:' + cluster[i].lat + ',lng:' + cluster[i].lng + '});\n';
+                boundsJs += 'bounds.extend([' + cluster[i].lat + ',' + cluster[i].lng + ']);\n';
             }
-            boundsJs += 'bounds.extend({lat:' + dropoff.lat + ',lng:' + dropoff.lng + '});\n';
-            boundsJs += 'map.fitBounds(bounds);\n';
-            
+            boundsJs += 'bounds.extend([' + dropoff.lat + ',' + dropoff.lng + ']);\n';
+            boundsJs += 'map.fitBounds(bounds,{padding:[20,20]});\n';
+
             var generatedTime = new Date().toLocaleString();
 
             var html = '<!DOCTYPE html><html lang="en"><head>';
             html += '<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">';
             html += '<title>' + escapeHtml(driver.name) + ' - Betty Lou\'s Pantry Route</title>';
+            html += '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>';
             html += '<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f5f5}';
             html += '.header{background:linear-gradient(135deg,#E87C1E 0%,#C4650F 100%);color:white;padding:20px;text-align:center}';
             html += '.header h1{font-size:1.8rem;margin-bottom:5px}.header p{opacity:0.9}';
@@ -1394,20 +3734,21 @@
             html += '.stat{text-align:center}.stat-value{font-size:1.5rem;font-weight:700}.stat-label{font-size:0.85rem;opacity:0.9}';
             html += '#map{width:100%;height:450px}.container{max-width:800px;margin:0 auto;padding:20px}';
             html += '.card{background:white;border-radius:12px;padding:20px;margin-top:20px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}.card h2{margin-bottom:15px;color:#333}';
-            html += '.print-btn{display:inline-block;padding:10px 20px;background:#E87C1E;color:white;border:none;border-radius:6px;font-size:1rem;cursor:pointer;margin-top:15px}';
-            html += '.print-btn:hover{background:#C4650F}';
+            html += '.print-btn,.expand-btn{display:inline-block;padding:10px 20px;background:#E87C1E;color:white;border:none;border-radius:6px;font-size:1rem;cursor:pointer;margin:15px 5px 0 0}';
+            html += '.print-btn:hover,.expand-btn:hover{background:#C4650F}';
             html += '.print-check{width:20px;height:20px;margin-right:10px;vertical-align:middle}';
+            html += '.street-header:hover{background:#eee!important}';
             html += '.meta{text-align:center;padding:15px;color:#888;font-size:0.85rem}';
             // Print styles
             html += '@media print{';
-            html += '#map,.print-btn{display:none!important}';
+            html += '#map,.print-btn,.expand-btn,.expand-icon{display:none!important}';
             html += 'body{background:white}';
             html += '.header{background:#E87C1E!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}';
             html += '.card{box-shadow:none;border:1px solid #ddd}';
             html += '.container{max-width:100%;padding:10px}';
             html += 'a{color:#333!important;text-decoration:none!important;background:none!important;padding:0!important}';
             html += '.address-item{page-break-inside:avoid}';
-            html += '.address-item img{display:none!important}';
+            html += '.street-addresses{display:block!important}';
             html += '.print-check{display:inline-block!important}';
             html += '}';
             html += '@media screen{.print-check{display:none}}';
@@ -1417,24 +3758,34 @@
             var hours = Math.floor(estimatedMinutes / 60);
             var mins = estimatedMinutes % 60;
             var timeStr = hours > 0 ? hours + 'h ' + mins + 'm' : mins + ' min';
+            var workScore = Math.round(cluster.length * parseFloat(miles));
 
             html += '<div class="header"><h1>🍞 ' + escapeHtml(driver.name) + '</h1>';
             html += '<p>Betty Lou\'s Pantry — Letter Carrier Food Drive</p>';
             html += '<div class="stats"><div class="stat"><div class="stat-value">' + cluster.length + '</div><div class="stat-label">Stops</div></div>';
             html += '<div class="stat"><div class="stat-value">' + miles + '</div><div class="stat-label">Miles</div></div>';
+            html += '<div class="stat"><div class="stat-value">' + workScore + '</div><div class="stat-label">Work</div></div>';
             html += '<div class="stat"><div class="stat-value">~' + timeStr + '</div><div class="stat-label">Est. Time</div></div></div></div>';
             html += '<div id="map"></div>';
             html += '<div class="container"><div class="card"><h2>Route Addresses</h2>';
+            html += '<button class="expand-btn" onclick="expandAll()">Expand All</button>';
+            html += '<button class="expand-btn" onclick="collapseAll()" style="background:#666;">Collapse All</button>';
             html += '<button class="print-btn" onclick="window.print()">🖨️ Print Route</button>';
             html += addressListHtml + '</div>';
             html += '<div class="meta">Generated: ' + escapeHtml(generatedTime) + ' | Betty Lou\'s Pantry Route Optimizer</div>';
             html += '</div>';
 
-            if (apiKey) {
-                html += '<script src="https://maps.googleapis.com/maps/api/js?key=' + apiKey + '&callback=initMap" async defer><\/script>';
-                html += '<script>function initMap(){var map=new google.maps.Map(document.getElementById("map"),{center:{lat:' + (cluster[0]?.lat || dropoff.lat) + ',lng:' + (cluster[0]?.lng || dropoff.lng) + '},zoom:13});';
-                html += markersJs + pathJs + boundsJs + '}<\/script>';
-            }
+            // Toggle functions for street groups
+            html += '<script>';
+            html += 'function toggleStreet(id){var el=document.getElementById(id);var icon=document.getElementById("icon-"+id);if(el.style.display==="none"){el.style.display="block";icon.textContent="▼";}else{el.style.display="none";icon.textContent="▶";}}';
+            html += 'function expandAll(){var els=document.querySelectorAll(".street-addresses");var icons=document.querySelectorAll(".expand-icon");els.forEach(function(el){el.style.display="block";});icons.forEach(function(icon){icon.textContent="▼";});}';
+            html += 'function collapseAll(){var els=document.querySelectorAll(".street-addresses");var icons=document.querySelectorAll(".expand-icon");els.forEach(function(el){el.style.display="none";});icons.forEach(function(icon){icon.textContent="▶";});}';
+            html += '<\/script>';
+
+            // Leaflet map script (free, no API key needed)
+            html += '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>';
+            html += '<script>var map=L.map("map");L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OpenStreetMap"}).addTo(map);';
+            html += markersJs + pathJs + boundsJs + '<\/script>';
 
             html += '</body></html>';
             return html;
@@ -1485,7 +3836,15 @@
                 downloadFile(content, 'betty-lous-routes-txt-' + new Date().toISOString().slice(0, 10) + '.zip', 'application/zip');
             });
         });
-        
+
+        downloadDebugLogBtn.addEventListener('click', function() {
+            var text = balanceLog.join('\n');
+            if (text.length === 0) {
+                text = 'No debug log available. Generate routes first.';
+            }
+            downloadFile(text, 'route_balance_log_' + new Date().toISOString().slice(0, 10) + '.txt', 'text/plain');
+        });
+
         // HELPERS
         function downloadFile(content, filename, type) {
             var blob = content instanceof Blob ? content : new Blob([content], { type: type });
@@ -1515,12 +3874,6 @@
             setTimeout(function() { toast.classList.remove('show'); }, 2000);
         }
         
-        // LOAD SAVED API KEY
-        var savedKey = localStorage.getItem('gmapsApiKey');
-        if (savedKey) apiKeyInput.value = savedKey;
-        apiKeyInput.addEventListener('change', function() {
-            localStorage.setItem('gmapsApiKey', apiKeyInput.value);
-        });
     })();
     </script>
 </body>

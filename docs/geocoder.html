@@ -57,7 +57,6 @@
             margin: 10px 0; border-left: 4px solid #E87C1E;
         }
         .example-box.output { border-left-color: #4CAF50; }
-        .arrow { text-align: center; font-size: 2rem; color: #E87C1E; margin: 15px 0; }
         .progress { margin-top: 20px; }
         .progress-bar { height: 10px; background: #e0e0e0; border-radius: 5px; overflow: hidden; }
         .progress-fill {
@@ -76,6 +75,26 @@
             width: 28px; height: 28px; background: #E87C1E; color: white;
             border-radius: 50%; font-weight: 600; margin-right: 10px; font-size: 0.9rem;
         }
+        .provider-toggle {
+            display: flex; gap: 10px; margin-bottom: 20px;
+        }
+        .provider-btn {
+            flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px;
+            padding: 15px; border: 2px solid #ddd; border-radius: 10px;
+            background: #f9f9f9; cursor: pointer; transition: all 0.2s ease;
+        }
+        .provider-btn:hover { border-color: #E87C1E; background: #fff8f0; }
+        .provider-btn.active { border-color: #E87C1E; background: #fff8f0; }
+        .provider-btn .provider-icon { font-size: 1.5rem; }
+        .provider-btn .provider-name { font-weight: 600; color: #333; }
+        .provider-btn .provider-desc { font-size: 0.8rem; color: #888; text-align: center; }
+        .provider-btn.active .provider-name { color: #E87C1E; }
+        .api-key-section { display: none; margin-top: 15px; padding: 15px; background: #f9f9f9; border-radius: 8px; }
+        .api-key-section.visible { display: block; }
+        .free-notice {
+            background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 8px;
+            padding: 12px 15px; margin-top: 15px; color: #2e7d32; font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -89,11 +108,31 @@
         </header>
 
         <div class="card">
-            <h2><span class="step-number">1</span> Google Maps API Key</h2>
-            <div class="form-group">
-                <label for="apiKey">API Key</label>
-                <input type="text" id="apiKey" placeholder="AIzaSy...">
-                <small>Get a key from <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>. Enable "Geocoding API".</small>
+            <h2><span class="step-number">1</span> Choose Geocoding Provider</h2>
+
+            <div class="provider-toggle">
+                <div class="provider-btn active" id="providerFree" data-provider="free">
+                    <span class="provider-icon">🆓</span>
+                    <span class="provider-name">Free (OpenStreetMap)</span>
+                    <span class="provider-desc">No API key needed<br>~1 address/second</span>
+                </div>
+                <div class="provider-btn" id="providerGoogle" data-provider="google">
+                    <span class="provider-icon">🔑</span>
+                    <span class="provider-name">Google (Fast)</span>
+                    <span class="provider-desc">Requires API key<br>Much faster</span>
+                </div>
+            </div>
+
+            <div class="free-notice" id="freeNotice">
+                <strong>No setup required!</strong> Using OpenStreetMap Nominatim (free). For 3000 addresses, expect ~50 minutes. You only need to do this once.
+            </div>
+
+            <div class="api-key-section" id="apiKeySection">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="apiKey">Google API Key</label>
+                    <input type="text" id="apiKey" placeholder="AIzaSy...">
+                    <small>Get a key from <a href="https://console.cloud.google.com/apis/credentials" target="_blank">Google Cloud Console</a>. Enable "Geocoding API".</small>
+                </div>
             </div>
         </div>
 
@@ -121,7 +160,7 @@ PO BOX 100,Center Valley,PA,18034-0100
 
         <div class="card">
             <h2><span class="step-number">3</span> Geocode & Download</h2>
-            <p>Click the button below to geocode all addresses. This may take a few minutes for large files.</p>
+            <p>Click the button below to geocode all addresses.</p>
 
             <button class="btn btn-primary" id="geocodeBtn" disabled>Geocode All</button>
 
@@ -163,6 +202,13 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
     <script>
     (function() {
         var rawAddresses = [];
+        var selectedProvider = 'free'; // 'free' or 'google'
+
+        // DOM Elements
+        var providerFree = document.getElementById('providerFree');
+        var providerGoogle = document.getElementById('providerGoogle');
+        var freeNotice = document.getElementById('freeNotice');
+        var apiKeySection = document.getElementById('apiKeySection');
         var apiKeyInput = document.getElementById('apiKey');
         var dropZone = document.getElementById('dropZone');
         var fileInput = document.getElementById('fileInput');
@@ -177,6 +223,25 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
         var resultsSection = document.getElementById('resultsSection');
         var resultStats = document.getElementById('resultStats');
         var downloadBtn = document.getElementById('downloadBtn');
+
+        // Provider toggle
+        function setProvider(provider) {
+            selectedProvider = provider;
+            if (provider === 'free') {
+                providerFree.classList.add('active');
+                providerGoogle.classList.remove('active');
+                freeNotice.style.display = 'block';
+                apiKeySection.classList.remove('visible');
+            } else {
+                providerGoogle.classList.add('active');
+                providerFree.classList.remove('active');
+                freeNotice.style.display = 'none';
+                apiKeySection.classList.add('visible');
+            }
+        }
+
+        providerFree.addEventListener('click', function() { setProvider('free'); });
+        providerGoogle.addEventListener('click', function() { setProvider('google'); });
 
         // Load saved API key
         var savedKey = localStorage.getItem('gmapsApiKey');
@@ -253,10 +318,12 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
 
         // Geocoding
         function startGeocoding(startIdx, endIdx) {
-            var apiKey = apiKeyInput.value.trim();
-            if (!apiKey) {
-                alert('Please enter your Google Maps API key first');
-                return;
+            if (selectedProvider === 'google') {
+                var apiKey = apiKeyInput.value.trim();
+                if (!apiKey) {
+                    alert('Please enter your Google Maps API key, or switch to Free mode');
+                    return;
+                }
             }
 
             if (rawAddresses.length === 0) {
@@ -270,7 +337,11 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
             progressSection.style.display = 'block';
             resultsSection.style.display = 'none';
 
-            geocodeAll(apiKey, startIdx, endIdx);
+            if (selectedProvider === 'google') {
+                geocodeWithGoogle(apiKeyInput.value.trim(), startIdx, endIdx);
+            } else {
+                geocodeWithNominatim(startIdx, endIdx);
+            }
         }
 
         // Track last geocoded range for download
@@ -280,13 +351,12 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
 
         geocodeBtn.addEventListener('click', function() {
             wasRangeMode = false;
-            startGeocoding(0, rawAddresses.length); // Process all
+            startGeocoding(0, rawAddresses.length);
         });
 
         rangeBtn.addEventListener('click', function() {
             var start = parseInt(rangeStartInput.value) || 1;
             var end = parseInt(rangeEndInput.value) || 10;
-            // Convert from 1-based to 0-based index
             start = Math.max(0, start - 1);
             end = Math.min(rawAddresses.length, end);
             if (start >= end) {
@@ -299,7 +369,8 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
             startGeocoding(start, end);
         });
 
-        function geocodeAll(apiKey, startIdx, endIdx) {
+        // Google Geocoding
+        function geocodeWithGoogle(apiKey, startIdx, endIdx) {
             var total = endIdx - startIdx;
             var current = startIdx;
             var successCount = 0;
@@ -309,34 +380,7 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
 
             function next() {
                 if (current >= endIdx) {
-                    // Done
-                    geocodeBtn.textContent = 'Geocode All';
-                    geocodeBtn.disabled = false;
-                    rangeBtn.disabled = false;
-                    progressFill.style.width = '100%';
-                    progressText.textContent = 'Complete!' + (isTestMode ? ' (rows ' + (startIdx + 1) + '-' + endIdx + ' of ' + rawAddresses.length + ')' : '');
-
-                    resultStats.innerHTML = '<div class="stat success">✓ ' + successCount.toLocaleString() + ' geocoded</div>';
-                    if (failCount > 0) {
-                        resultStats.innerHTML += '<div class="stat error">✗ ' + failCount + ' failed</div>';
-                        if (lastError) {
-                            resultStats.innerHTML += '<div class="stat error" style="width:100%;margin-top:10px;">Last error: ' + lastError + '</div>';
-                            if (lastError.indexOf('REQUEST_DENIED') !== -1 || lastError.indexOf('not authorized') !== -1) {
-                                resultStats.innerHTML += '<div style="width:100%;margin-top:15px;padding:15px;background:#fff3e0;border-radius:8px;border-left:4px solid #ff9800;">' +
-                                    '<strong style="color:#e65100;">How to fix:</strong><br>' +
-                                    '1. Go to <a href="https://console.cloud.google.com/apis/library/geocoding-backend.googleapis.com" target="_blank">Google Cloud Console</a><br>' +
-                                    '2. Make sure you\'re in the correct project<br>' +
-                                    '3. Click <strong>Enable</strong> for the Geocoding API<br>' +
-                                    '4. Ensure billing is enabled on the project</div>';
-                            }
-                        }
-                    }
-                    resultsSection.style.display = 'block';
-
-                    // Only auto-download if we have successful results and not in test mode
-                    if (successCount > 0 && !isTestMode) {
-                        downloadBtn.click();
-                    }
+                    finishGeocoding(successCount, failCount, lastError, isTestMode, startIdx, endIdx);
                     return;
                 }
 
@@ -358,25 +402,121 @@ PO BOX 100,Center Valley,PA,18034-0100,40.5362,-75.3956
                             console.error('Geocode failed for:', addr.fullAddress, 'Status:', data.status, data.error_message || '');
                         }
                     })
-                    .catch(function() { failCount++; })
+                    .catch(function(e) {
+                        failCount++;
+                        lastError = e.message || 'Network error';
+                    })
                     .finally(function() {
                         current++;
-                        var processed = current - startIdx;
-                        var pct = Math.round((processed / total) * 100);
-                        progressFill.style.width = pct + '%';
-                        progressText.textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + pct + '%)';
-                        setTimeout(next, 50);
+                        updateProgress(current - startIdx, total);
+                        setTimeout(next, 50); // Fast for Google
                     });
             }
 
             next();
         }
 
+        // Nominatim (Free) Geocoding
+        function geocodeWithNominatim(startIdx, endIdx) {
+            var total = endIdx - startIdx;
+            var current = startIdx;
+            var successCount = 0;
+            var failCount = 0;
+            var lastError = '';
+            var isTestMode = !(startIdx === 0 && endIdx === rawAddresses.length);
+
+            function next() {
+                if (current >= endIdx) {
+                    finishGeocoding(successCount, failCount, lastError, isTestMode, startIdx, endIdx);
+                    return;
+                }
+
+                var addr = rawAddresses[current];
+                var url = 'https://nominatim.openstreetmap.org/search?format=json&q=' +
+                    encodeURIComponent(addr.fullAddress) + '&limit=1';
+
+                fetch(url, {
+                    headers: {
+                        'User-Agent': 'BettyLousPantry-RouteOptimizer/1.0'
+                    }
+                })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data && data.length > 0) {
+                            addr.lat = parseFloat(data[0].lat);
+                            addr.lng = parseFloat(data[0].lon);
+                            successCount++;
+                        } else {
+                            failCount++;
+                            lastError = 'No results for: ' + addr.fullAddress;
+                            console.error('Nominatim: No results for:', addr.fullAddress);
+                        }
+                    })
+                    .catch(function(e) {
+                        failCount++;
+                        lastError = e.message || 'Network error';
+                    })
+                    .finally(function() {
+                        current++;
+                        updateProgress(current - startIdx, total);
+                        // Nominatim requires 1 second between requests
+                        setTimeout(next, 1000);
+                    });
+            }
+
+            next();
+        }
+
+        function updateProgress(processed, total) {
+            var pct = Math.round((processed / total) * 100);
+            progressFill.style.width = pct + '%';
+
+            // Estimate remaining time for Nominatim
+            if (selectedProvider === 'free') {
+                var remaining = total - processed;
+                var mins = Math.floor(remaining / 60);
+                var secs = remaining % 60;
+                var timeStr = mins > 0 ? mins + 'm ' + secs + 's' : secs + 's';
+                progressText.textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + pct + '%) — ~' + timeStr + ' remaining';
+            } else {
+                progressText.textContent = processed.toLocaleString() + ' / ' + total.toLocaleString() + ' (' + pct + '%)';
+            }
+        }
+
+        function finishGeocoding(successCount, failCount, lastError, isTestMode, startIdx, endIdx) {
+            geocodeBtn.textContent = 'Geocode All';
+            geocodeBtn.disabled = false;
+            rangeBtn.disabled = false;
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Complete!' + (isTestMode ? ' (rows ' + (startIdx + 1) + '-' + endIdx + ' of ' + rawAddresses.length + ')' : '');
+
+            resultStats.innerHTML = '<div class="stat success">✓ ' + successCount.toLocaleString() + ' geocoded</div>';
+            if (failCount > 0) {
+                resultStats.innerHTML += '<div class="stat error">✗ ' + failCount + ' failed</div>';
+                if (lastError) {
+                    resultStats.innerHTML += '<div class="stat error" style="width:100%;margin-top:10px;">Last error: ' + lastError + '</div>';
+                    if (selectedProvider === 'google' && (lastError.indexOf('REQUEST_DENIED') !== -1 || lastError.indexOf('not authorized') !== -1)) {
+                        resultStats.innerHTML += '<div style="width:100%;margin-top:15px;padding:15px;background:#fff3e0;border-radius:8px;border-left:4px solid #ff9800;">' +
+                            '<strong style="color:#e65100;">How to fix:</strong><br>' +
+                            '1. Go to <a href="https://console.cloud.google.com/apis/library/geocoding-backend.googleapis.com" target="_blank">Google Cloud Console</a><br>' +
+                            '2. Make sure you\'re in the correct project<br>' +
+                            '3. Click <strong>Enable</strong> for the Geocoding API<br>' +
+                            '4. Ensure billing is enabled on the project</div>';
+                    }
+                }
+            }
+            resultsSection.style.display = 'block';
+
+            // Only auto-download if we have successful results and not in test mode
+            if (successCount > 0 && !isTestMode) {
+                downloadBtn.click();
+            }
+        }
+
         // Download
         downloadBtn.addEventListener('click', function() {
             var csv = 'Address,City,State,Zip,Latitude,Longitude\n';
 
-            // Determine range to export
             var exportStart = 0;
             var exportEnd = rawAddresses.length;
             if (wasRangeMode) {
